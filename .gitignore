@@ -1,0 +1,15 @@
+node_modules/
+runtime/
+exports/
+work/
+*.log
+*.lnk
+*.sqlite*
+*.db*
+.env
+.env.*
+!.env.example
+/verification*.json
+/*.png
+__pycache__/
+.venv/
