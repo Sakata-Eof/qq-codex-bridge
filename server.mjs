@@ -12,6 +12,7 @@ import { History } from './history.mjs';
 import { within } from './bridge.mjs';
 import { syncCommands, syncQuickMenu } from './commands.mjs';
 import { authorizeUI, browserCookie } from './ui-auth.mjs';
+import { ReleaseNotifications } from './release-notifications.mjs';
 const dir=path.dirname(fileURLToPath(import.meta.url)),runtime=path.join(dir,'runtime');fs.mkdirSync(runtime,{recursive:true});
 const configFile=path.join(runtime,'config.json');
 const defaults={appId:'',clientSecret:'',users:[],pairingCodes:[],usersRoot:path.resolve(dir,'../../work/qq-users'),sandbox:false,qqProxy:'',codexBinary:'codex',adminToken:crypto.randomBytes(32).toString('hex'),python:'C:\\Users\\32979\\AppData\\Local\\Programs\\Python\\Python310\\python.exe',whisperModel:'C:\\Users\\32979\\.cache\\huggingface\\hub\\models--Systran--faster-whisper-small\\snapshots\\536b0662742c02347bc0e980a01041f333bce120',ffmpeg:'ffmpeg',ffprobe:'ffprobe',bridgeDir:dir};
@@ -32,6 +33,10 @@ if(process.platform==='win32'){
 const logs=[];
 function log(text){const line=`${new Date().toISOString()} ${text}`;logs.push(line);if(logs.length>50)logs.shift();fs.appendFileSync(path.join(runtime,'service.log'),line+'\n');console.log(line);}
 const qq=new QQ(config,log),history=new History(config,runtime),accounts=new Accounts(config,qq,runtime,persist,log,history);
+const releases=new ReleaseNotifications({file:path.join(runtime,'release-notifications.json'),users:()=>config.users,enabled:config.releaseNotificationsEnabled===true,
+  send:(user,text)=>qq.sendAnnouncement(user,text),
+  record:(user,entry)=>history.record(user.id,{kind:entry.status==='sent'?'outbound':'error',messageId:`release:${entry.releaseId}`,...entry})});
+let draining=false;
 for(const user of config.users)history.importCodex(user.id);
 let commandsState={ok:false,message:'等待 QQ 连接'},commandsFlight;
 async function synchronizeCommands(){
@@ -64,6 +69,11 @@ const server=http.createServer(async(req,res)=>{
   if(!authorizeUI(req,config.adminToken,base)){respond(res,403,{error:'本机页面未登录或登录已失效，请运行 Start.ps1 重新验证'});return;}
   try{
     if(req.url==='/api/session'&&['GET','POST'].includes(req.method)){if(req.method==='POST')res.setHeader('Set-Cookie',browserCookie(config.adminToken));respond(res,200,{ok:true});return;}
+    if(req.method==='POST'&&req.url==='/api/releases'){
+      if(draining)throw new Error('服务正在停机，未发送通知');
+      const input=await body(req);if(!/^[a-zA-Z0-9._-]{1,80}$/.test(input.id||'')||typeof input.text!=='string'||!input.text.trim()||input.text.length>1400)throw new Error('通知需要稳定版本 id 和 1–1400 字的正文');
+      const counts=await releases.broadcast(input);log(`发布通知完成：发送 ${counts.sent}，失败 ${counts.failed}，待核实 ${counts.unknown}，已跳过 ${counts.skipped}`);respond(res,200,{ok:true,...counts});return;
+    }
     if(req.method==='GET'&&req.url.startsWith('/api/models?')){
       const user=config.users.find(x=>x.id===new URL(req.url,base).searchParams.get('user'));if(!user)throw new Error('账号不存在');const x=await accounts.get(user);respond(res,200,{current:x.models.current(),models:await x.models.list(true)});return;
     }
@@ -104,7 +114,7 @@ const server=http.createServer(async(req,res)=>{
       respond(res,200,{appId:config.appId,secretConfigured:Boolean(config.clientSecret),pairingCodes:config.pairingCodes.filter(p=>p.expires>Date.now()).map(p=>({label:p.label,command:`/pair ${p.pin}`})),sandbox:config.sandbox,qq:qq.state,codex:codexState,commands:commandsState,logs,users:accounts.status(),globalMemory:globalMemory.read(globalMemory.globalFile).map(x=>x.text).join('\n'),rotationTurns:config.rotationTurns,idleHours:config.idleHours,multimodal:'图片直接输入；语音 QQ ASR 或本地 whisper；视频抽样画面与音轨；文件读取与富媒体返回'});return;
     }
     if(req.method==='POST'&&req.url==='/api/config'){
-      if(accounts.busy())throw new Error('任务执行中，暂不能更改配置');
+      if(accounts.busy()||releases.busy())throw new Error('任务执行或发布通知中，暂不能更改配置');
       const input=await body(req);
       if(!/^\d+$/.test(input.appId||'')||input.appId==='1903912458')throw new Error('请填写新机器人的 AppID，勿使用 Hermes 现有 AppID');
       if(config.appId&&input.appId!==config.appId&&config.users.length)throw new Error('已有账号绑定，切换 AppID 前需要重建绑定配置');
@@ -125,7 +135,7 @@ const server=http.createServer(async(req,res)=>{
       if(!Number.isInteger(input.rotationTurns)||input.rotationTurns<5||input.rotationTurns>200||input.idleHours<1||input.idleHours>72)throw new Error('轮数范围 5–200，空闲时间范围 1–72 小时');
       config.rotationTurns=input.rotationTurns;config.idleHours=Number(input.idleHours);persist();for(const x of accounts.instances.values()){x.bridge.config.rotationTurns=config.rotationTurns;x.bridge.config.idleHours=config.idleHours;}respond(res,200,{ok:true});return;
     }
-    if(req.method==='POST'&&req.url==='/api/shutdown'){if(accounts.busy()||history.exportsActive)throw new Error('任务执行或历史导出中，暂不能停止服务');respond(res,200,{ok:true});setTimeout(()=>void close(),100);return;}
+    if(req.method==='POST'&&req.url==='/api/shutdown'){if(accounts.busy()||history.exportsActive||releases.busy())throw new Error('任务执行、历史导出或发布通知中，暂不能停止服务');draining=true;respond(res,200,{ok:true});setTimeout(()=>void close(),100);return;}
     if(req.method==='POST'&&req.url==='/api/reconnect'){if(accounts.busy())throw new Error('任务执行中，不能重新连接');accounts.stop();accounts.instances.clear();await checkCodex();respond(res,200,{ok:true});return;}
     if(req.method==='POST'&&req.url==='/api/user'){
       const input=await body(req),user=config.users.find(x=>x.id===input.id);if(!user)throw new Error('账号不存在');if(accounts.busy())throw new Error('任务执行中不能更改目录');

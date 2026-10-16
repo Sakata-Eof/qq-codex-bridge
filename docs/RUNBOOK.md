@@ -36,6 +36,17 @@ HTTP 存活、守护运行、QQ 在线和 Codex 可执行是不同条件。管�
 
 回滚前同样停机并备份。选择已知 Git 提交恢复源码；若涉及数据库结构变化，先检查迁移兼容性，不要假设旧代码可以读取新数据库。保留用户未提交改动。
 
+## 发布通知
+
+本机所有者已授权在问题修复和功能上线后通知已绑定账号。管理界面和消息历史界面的改动不发送 QQ 通知。其他改动只有 `runtime/config.json` 的 `releaseNotificationsEnabled` 明确为 `true` 时可发送，其他安装默认不启用。先完成检查、上线和健康验证，再写一份不含账号私有信息的简明说明，并使用唯一稳定的发布 ID：
+
+```powershell
+node notify-release.mjs 20261015-mobile-inputs runtime/release-notice.txt --preview
+node notify-release.mjs 20261015-mobile-inputs runtime/release-notice.txt
+```
+
+脚本调用已登录的本机管理 API，不另开 QQ 网关。发送前后状态保存在 `runtime/release-notifications.json`，各账号历史保留投递记录。相同发布 ID 不重复投递；失败或待核实不能通过换 ID 绕过去重。QQ 是否允许主动消息以平台实际结果为准，API 确认成功也不能证明用户已阅读。服务重启不会自动广播旧通知。
+
 ## 备份与恢复
 
 源码用 Git；运行数据用私有备份。完整数据备份包括 `runtime/`、`exports/`（需要保留时）以及配置指向的所有账号工作目录。运行目录含 AppSecret、管理凭据、Codex 登录、记忆和聊天内容，备份应限制为本机用户可访问。

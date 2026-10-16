@@ -90,6 +90,10 @@ export class QQ extends EventEmitter {
     }
     if(this.counts.size>2000)this.counts.delete(this.counts.keys().next().value);
   }
+  async sendAnnouncement(user,text) {
+    if(typeof user?.id!=='string'||!user.id||typeof text!=='string'||!text.trim()||text.length>1400)throw Object.assign(new Error('主动通知需要接收账号及 1–1400 字的正文'),{definite:true});
+    return this.api(`/v2/users/${encodeURIComponent(user.id)}/messages`,{msg_type:0,content:text});
+  }
   async sendButtons(e,text,rows){
     const max=e.group?5:4,n=(this.counts.get(e.id)||0)+1;if(n>max)throw new Error('QQ 当前消息回复次数已用完');
     const endpoint=`/v2/${e.group?'groups':'users'}/${encodeURIComponent(e.chat)}/messages`;
