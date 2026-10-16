@@ -159,3 +159,41 @@ test('failed, partial, file and foreign account or session deliveries never hide
   const {h}=historyFixture();const result={kind:'result',messageId:'m',threadId:'one',recordId:'result',time:'2026-10-08T00:00:01Z',text:'完整任务结果XYZ',status:'completed'};h.record('A',result);for(const [user,extra] of [['B',{}],['A',{threadId:'two'}],['A',{file:'own.txt'}],['A',{buttons:['确认']}],['A',{time:'2026-10-08T00:00:00Z'}]])h.record(user,{...result,kind:'outbound',recordId:Math.random().toString(),time:'2026-10-08T00:00:02Z',...extra});assert.equal(h.page('A',{thread:'one'}).records.find(x=>x.kind==='result').mergedInto,undefined);
   h.record('A',{kind:'outbound',messageId:'m',threadId:'one',time:'2026-10-08T00:00:03Z',text:'完整任务\n（结果较长，完整内容保存在本机配置页。）'});const partial=h.page('A',{thread:'one'}).records.find(x=>x.kind==='result');assert.equal(partial.partialDelivery,true);assert.equal(partial.mergedInto,undefined);assert.equal(partial.text,result.text);h.record('A',{kind:'error',messageId:'fail',threadId:'one',text:'执行失败'});h.record('A',{kind:'outbound',messageId:'fail',threadId:'one',text:'执行失败'});assert.equal(h.page('A',{thread:'one'}).records.find(x=>x.kind==='error').mergedInto,undefined);h.close();
 });
+
+test('failed task stays associated with its original message after supplements and status commands',async()=>{
+  const f=fixture(),original=f.event('看图','original'),results=[],delivered=[];
+  f.bridge.onResult=(e,result)=>results.push({messageId:e.id,...result});
+  f.bridge.send=async(e,text)=>delivered.push({messageId:e.id,text});
+  await f.bridge.handle(original);
+  await f.bridge.handle(f.event('在图片上','supplement'));
+  await f.bridge.handle(f.event('/status','status'));
+  f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'failed',error:{message:'workspace routing discovery failed'}}}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(results.map(x=>[x.messageId,x.status,x.text]),[['original','failed','workspace routing discovery failed']]);
+  assert.deepEqual(delivered.filter(x=>x.text==='workspace routing discovery failed'),[{messageId:'original',text:'workspace routing discovery failed'}]);
+  const s=f.bridge.sessions.get(f.bridge.key(original));assert.equal(s.active,false);assert.equal(s.busy,false);assert.equal(s.delivering,false);
+  await f.bridge.handle(f.event('下一轮','next'));
+  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,2);
+});
+
+test('completed result delivery retains its text and files when the session is reset before delivery resumes',async()=>{
+  const f=fixture(),original=f.event('生成文件','original'),sent=[],files=[];
+  await f.bridge.handle(original);
+  const file=path.join(f.root,'result.txt');fs.writeFileSync(file,'completed file');
+  f.bridge.media={prepare:async e=>[{type:'text',text:e.text}],sendFile:async(e,file)=>files.push({messageId:e.id,file})};
+  f.bridge.send=async(e,text)=>sent.push({messageId:e.id,text});
+  const deliver=f.bridge.deliver.bind(f.bridge);let resume;
+  const paused=new Promise(resolve=>{resume=resolve;});f.bridge.deliver=async completed=>{await paused;await deliver(completed);};
+  const final=`已生成 [文件](${file})`;
+  f.rpc.emit('notification',{method:'item/completed',params:{threadId:'thread-1',item:{type:'agentMessage',phase:'final_answer',text:final}}});
+  f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'completed'}}});
+  await f.bridge.handle(f.event('/new','reset'));
+  const next=f.bridge.handle(f.event('新任务','next'));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,1);
+  resume();await next;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,2);
+  assert.deepEqual(sent.filter(x=>x.text===final),[{messageId:'original',text:final}]);
+  assert.deepEqual(files,[{messageId:'original',file}]);
+  assert.equal(f.bridge.sessions.get(f.bridge.key(original)).delivering,false);
+});

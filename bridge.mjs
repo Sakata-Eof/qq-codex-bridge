@@ -49,7 +49,7 @@ export class Bridge {
   session(e) {
     const key = this.key(e);
     if (!this.sessions.has(key)) this.sessions.set(key, { cwd:this.config.workspace, active:false, busy:false, loaded:false, status:'空闲', last:'' });
-    const s = this.sessions.get(key); s.event = e; return s;
+    return this.sessions.get(key);
   }
   async say(e, text, buttons=null) {
     try { await this.send(e, text, buttons); return true; }
@@ -115,8 +115,9 @@ export class Bridge {
       return this.say(e,`已创建新的会话入口。项目：${s.cwd}`);
     }
     if (text.startsWith('/') && !text.startsWith('/codex ')) return this.say(e,'未知指令，请发送 /help。');
+    if(s.deliveryPromise)await s.deliveryPromise;
     if (s.busy || s.active || s.delivering || this.models?.changing) return this.say(e,'已有任务或模型切换正在执行，未提交新任务。可以 /status、/stop，或处理审批。');
-    s.busy = true; s.status = '正在启动'; this.save();
+    s.event=e;s.busy = true; s.status = '正在启动'; this.save();
     try {
       const input=this.media?await this.media.prepare(e,s.cwd):[{type:'text',text:text.replace(/^\/codex\s+/,'')}];
       await this.models?.validateInput(input);
@@ -173,7 +174,11 @@ export class Bridge {
         if(s.event)this.onResult?.(s.event,{text:s.last,status:p.turn.status,threadId:s.threadId,turnId:s.turnId});
         s.turns=(s.turns||0)+1;s.lastAt=Date.now();s.recent=[...(s.recent||[]),{prompt:s.currentPrompt||'',result:s.last.slice(0,1000)}].slice(-3);
         for (const [id,q] of this.questions) if(q.threadId===s.threadId) this.questions.delete(id);
-        this.save(); if(s.event){s.delivering=true;void this.deliver(s).catch(err=>this.log(`结果发送失败：${err.message}`)).finally(()=>{s.delivering=false;});}
+        this.save(); if(s.event){
+          // Commands can reset the session while its completed result is being delivered.
+          const delivery={event:s.event,last:s.last,generated:[...(s.generated||[])]};
+          s.delivering=true;s.deliveryPromise=this.deliver(delivery).catch(err=>this.log(`结果发送失败：${err.message}`)).finally(()=>{s.delivering=false;s.deliveryPromise=null;});
+        }
       }
       if (m.method === 'serverRequest/resolved') {
         for(const [id,q] of this.questions) if(q.rpcId===p.requestId) this.questions.delete(id);
