@@ -21,11 +21,23 @@ export class Bridge {
     rpc.on('request', m => this.request(m));
     rpc.on('offline', () => {
       this.questions.clear();
-      for (const s of this.sessions.values()) { s.loaded = false; s.active = false; s.busy = false; s.status = 'Codex 进程离线；前次任务结果需核实'; }
+      for (const s of this.sessions.values()) {
+        if(s.active)this.observe(s.event,{stage:'uncertain',code:'process_offline',executionStatus:'unknown',deliveryStatus:'not_required',threadId:s.threadId,turnId:s.turnId});
+        for(const [e,input] of s.inputEvents||[])if(!input.submitted){this.observe(e,{stage:'failed',code:'process_offline',executionStatus:'failed',deliveryStatus:'not_required'});input.finished=true;}
+        s.inputEpoch=(s.inputEpoch||0)+1;s.loaded = false; s.active = false; s.busy = false; s.status = 'Codex 进程离线；前次任务结果需核实';
+      }
       this.save();
     });
   }
   key(e) { return `${e.group ? 'group' : 'dm'}:${e.chat}:${e.user}`; }
+  receiptKey(e) {return '@chat:'+JSON.stringify([this.key(e),String(e.id)]);}
+  indexSeen() {
+    if(this.seenIndexSource===this.seen)return;
+    this.seenIndexSource=this.seen;this.scopedSeenIds=new Set();
+    for(const key of this.seen.keys())if(typeof key==='string'&&key.startsWith('@chat:')){try{this.scopedSeenIds.add(JSON.parse(key.slice(6))[1]);}catch{}}
+  }
+  hasSeen(e) {this.indexSeen();return this.seen.has(this.receiptKey(e))||(!this.scopedSeenIds.has(String(e.id))&&this.seen.has(e.id));}
+  rememberSeen(e,time) {this.indexSeen();this.scopedSeenIds.add(String(e.id));this.seen.set(this.receiptKey(e),time);this.seen.set(e.id,time);}
   save() {
     const data = Object.fromEntries([...this.sessions].map(([k,s]) => [k,{ model:s.model,effort:s.effort,threadId:s.threadId, cwd:s.cwd, active:s.active || s.busy, last:s.last,turns:s.turns||0,lastAt:s.lastAt||0,recent:s.recent||[],handoff:s.handoff||'',compactions:s.compactions||0,tokenUsage:s.tokenUsage||null }]));
     fs.writeFileSync(this.stateFile + '.tmp', JSON.stringify(data, null, 2), { mode: 0o600 });
@@ -36,17 +48,35 @@ export class Bridge {
     if (!this.sessions.has(key)) this.sessions.set(key, { cwd:this.config.workspace, active:false, busy:false, loaded:false, status:'空闲', last:'' });
     return this.sessions.get(key);
   }
+  observe(e,details) {
+    if(!e)return;
+    try {const id=this.onTaskEvent?.(e,details);if(typeof id==='string')e.taskId=id;}catch{/* Observation must never retry or change a model operation. */}
+    return e.taskId;
+  }
+  summary(e) {try{return this.taskSummary?.(e)||'';}catch{return '任务诊断暂不可用';}}
+  async sendReport(e,text,buttons=null) {
+    try {
+      const report=await this.send(e,text,buttons);
+      return {status:report?.truncated?'partial':'sent',acceptedParts:report?.acceptedParts??1,totalParts:report?.totalParts??1,truncated:Boolean(report?.truncated),uncertain:false};
+    }catch(err){
+      this.log(`QQ 回复发送失败：${err.message}，结果保存在本地，使用 /result 重取`);
+      const acceptedParts=Number(err.acceptedParts)||0,definite=err.definite===true||(err.definite!==false&&Number(err.status)>=400&&Number(err.status)<500&&Number(err.status)!==408);
+      const uncertain=err.uncertain??(!definite&&!err.accepted);
+      const allAccepted=err.accepted&&acceptedParts>0&&acceptedParts>=(err.totalParts||1)&&!err.truncated;
+      return {status:allAccepted?'sent':acceptedParts?'partial':uncertain?'unknown':'failed',acceptedParts,totalParts:err.totalParts||1,truncated:Boolean(err.truncated),uncertain,auditFailed:Boolean(err.auditFailed),error:true};
+    }
+  }
   async say(e, text, buttons=null) {
-    try { await this.send(e, text, buttons); return true; }
-    catch(err) { this.log(`QQ 回复发送失败：${err.message}，结果保存在本地，使用 /result 重取`); return false; }
+    const report=await this.sendReport(e,text,buttons);return !report.error;
   }
   async handle(e) {
     // Persistent deduplication happens BEFORE any side effect, including /pair and turn/start.
     const now = Date.now();
-    for (const [k,t] of this.seen) if (now-t > 86400000) this.seen.delete(k);
+    this.indexSeen();
+    for (const [k,t] of this.seen) if (now-t > 86400000) {this.seen.delete(k);this.scopedSeenIds.delete(String(k));}
     const sources=e.sourceEvents||[e];
-    if(sources.every(source=>this.seen.has(source.id)))return;
-    for(const source of sources)this.seen.set(source.id,now);
+    if(sources.every(source=>this.hasSeen(source)))return;
+    for(const source of sources)this.rememberSeen(source,now);
     this.persistSeen?.(this.seen);
     if (!this.config.ownerOpenId) {
       if (e.group || !e.text.startsWith('/pair ')) return;
@@ -72,8 +102,9 @@ export class Bridge {
     if(text==='/media-test'&&this.media){try{await this.transfer(()=>this.media.smoke(e,s.cwd));await this.say(e,'已发送测试文件、图片和音频，请检查 QQ 中的下载、预览和播放。');}catch(err){this.log(`媒体测试失败：${err.message}`);await this.say(e,`媒体测试失败：${err.message}`);}return;}
     if (!text && !e.attachments?.length) return this.say(e,'请发送文字、图片、语音、视频或文件。/help 查看指令。');
     if (text === '/help') return this.say(e,HELP);
-    if((text==='/status'||text==='/context')&&this.pendingFor?.(e))return this.say(e,`正在合并连续消息（${this.pendingFor(e)} 条），短暂停顿后自动处理。\n当前任务：${s.status}\n会话：${s.threadId||'未创建'}\n/stop 可取消尚未提交的消息。`);
-    if (text === '/status' || text === '/context') return this.say(e,`${s.status}\n模型：${this.models?.current().model||s.model||'Codex 默认'} · ${this.models?.current().effort||s.effort||'默认'}\n项目：${s.cwd}\n会话：${s.threadId || '未创建'}\n本会话已完成 ${s.turns||0} 轮，已压缩 ${s.compactions||0} 次\n最近上下文：${s.tokenUsage?.last?.inputTokens||'未知'} / ${s.tokenUsage?.modelContextWindow||'模型默认'} token\n空闲 ${this.config.idleHours||6} 小时或完成 ${this.config.rotationTurns||40} 轮后，下次任务自动换会话并携带近期摘要。\n待处理请求：${[...this.questions.entries()].filter(([,q])=>q.key===this.key(e)).map(([id])=>id).join(', ') || '无'}`);
+    const taskSummary=text==='/status'||text==='/context'?this.summary(e):'';
+    if((text==='/status'||text==='/context')&&this.pendingFor?.(e))return this.say(e,`正在合并连续消息（${this.pendingFor(e)} 条），短暂停顿后自动处理。\n当前任务：${s.status}\n会话：${s.threadId||'未创建'}\n/stop 可取消尚未提交的消息。${taskSummary?'\n'+taskSummary:''}`);
+    if (text === '/status' || text === '/context') return this.say(e,`${s.status}\n模型：${this.models?.current().model||s.model||'Codex 默认'} · ${this.models?.current().effort||s.effort||'默认'}\n项目：${s.cwd}\n会话：${s.threadId || '未创建'}\n本会话已完成 ${s.turns||0} 轮，已压缩 ${s.compactions||0} 次\n最近上下文：${s.tokenUsage?.last?.inputTokens||'未知'} / ${s.tokenUsage?.modelContextWindow||'模型默认'} token\n空闲 ${this.config.idleHours||6} 小时或完成 ${this.config.rotationTurns||40} 轮后，下次任务自动换会话并携带近期摘要。\n待处理请求：${[...this.questions.entries()].filter(([,q])=>q.key===this.key(e)).map(([id])=>id).join(', ') || '无'}${taskSummary?'\n'+taskSummary:''}`);
     if(text==='/memory' && this.memory)return this.say(e,this.memory.display());
     if(text.startsWith('/remember ') && this.memory){try{const entry=this.memory.add(text.slice(10));return this.say(e,`已保存到你的独立记忆：${entry.id}`);}catch(err){return this.say(e,err.message);}}
     if(text.startsWith('/forget ') && this.memory){try{this.memory.remove(text.slice(8).trim());return this.say(e,'已删除这条账号记忆。');}catch(err){return this.say(e,err.message);}}
@@ -108,31 +139,37 @@ export class Bridge {
   }
   async enqueueInput(e,s) {
     const epoch=s.inputEpoch||0;
+    if(!e.taskId)this.observe(e,{stage:'received'});
+    this.observe(e,{stage:'queued'});
+    (s.inputEvents||=new Map()).set(e,{submitted:false});
     this.inputTasks++;s.queuedInputs=(s.queuedInputs||0)+1;
     const task=(s.inputChain||Promise.resolve()).then(()=>{
       if(epoch!==(s.inputEpoch||0)){
+        if(!s.inputEvents.get(e)?.cancelled&&!s.inputEvents.get(e)?.finished)this.observe(e,{stage:'cancelled',code:'cancelled_before_submit',executionStatus:'cancelled',deliveryStatus:'not_required'});
         if(s.inputCancellationReason==='prepare')return this.say(e,'前一条消息准备失败，这条后续消息未提交。请检查附件后重新发送。');
         return;
       }
       return this.submitInput(e,s,epoch);
     });
     s.inputChain=task.catch(()=>{});
-    try{return await task;}finally{this.inputTasks--;s.queuedInputs--;}
+    try{return await task;}finally{this.inputTasks--;s.queuedInputs--;s.inputEvents.delete(e);}
   }
   cancelBuffered(e,s,reason) {
     const cancelled=this.cancelPending?.(e)||[];
-    for(const source of cancelled)this.seen.set(source.id,Date.now());
+    for(const source of cancelled)this.rememberSeen(source,Date.now());
     if(cancelled.length)this.persistSeen?.(this.seen);
+    for(const [event,input] of s.inputEvents||[])if(!input.submitted&&!input.cancelled&&!input.finished){this.observe(event,{stage:'cancelled',code:'cancelled_before_submit',executionStatus:'cancelled',deliveryStatus:'not_required'});input.cancelled=true;}
     s.inputEpoch=(s.inputEpoch||0)+1;s.inputCancellationReason=reason;
     return cancelled;
   }
   async submitInput(e,s,epoch) {
-    if(this.models?.changing)return this.say(e,'模型正在切换，消息未提交，请稍后再发。');
+    if(this.models?.changing){this.observe(e,{stage:'failed',code:'model_changing',executionStatus:'failed',deliveryStatus:'not_required'});return this.say(e,'模型正在切换，消息未提交，请稍后再发。');}
     if(s.deliveryPromise)await s.deliveryPromise;
     if(epoch!==(s.inputEpoch||0))return;
-    if(s.active&&!s.turnId)return this.say(e,'上一任务状态尚未确认，这条补充未提交。请先 /status 核对，勿重复提交任务。');
+    if(s.active&&!s.turnId){this.observe(e,{stage:'failed',code:'active_turn_unknown',executionStatus:'failed',deliveryStatus:'not_required'});return this.say(e,'上一任务状态尚未确认，这条补充未提交。请先 /status 核对，勿重复提交任务。');}
     s.busy=true;s.status=s.active?'正在接收补充':'正在启动';this.save();
     try {
+      this.observe(e,{stage:'preparing'});
       const input=this.media?await this.media.prepare(e,s.cwd):[{type:'text',text:e.text.replace(/^\/codex\s+/,'')}];
       await this.models?.validateInput(input);
       if(epoch!==(s.inputEpoch||0))return;
@@ -143,6 +180,8 @@ export class Bridge {
     }catch(err){
       if(epoch!==(s.inputEpoch||0))return;
       let text=`${s.active?'补充接收失败':'启动异常'}：${err.message}`;
+      if(s.inputEvents?.has(e))s.inputEvents.get(e).finished=true;
+      this.observe(e,{stage:'failed',code:'prepare_failed',executionStatus:'failed',deliveryStatus:'not_required'});
       if(!s.active){const cancelled=this.cancelBuffered(e,s,'prepare');if(cancelled.length)text+=`；同时取消 ${cancelled.length} 条后续消息，均未提交。`;s.status=text;s.last=text;s.loaded=false;}
       await this.say(e,text);
     }finally{s.busy=false;this.save();}
@@ -150,23 +189,29 @@ export class Bridge {
   async steerInput(e,s,input,epoch=s.inputEpoch||0) {
     const threadId=s.threadId,turnId=s.turnId;
     try{
+      this.observe(e,{stage:'starting',threadId,turnId});
+      if(s.inputEvents?.has(e))s.inputEvents.get(e).submitted=true;
       await this.rpc.call('turn/steer',{threadId,expectedTurnId:turnId,input});
       e.historyThreadId=threadId;this.onSession?.(e,{...s,threadId});
+      this.observe(e,{stage:'supplemented',executionStatus:'awaiting_parent',deliveryStatus:'not_required',threadId,turnId,parentTaskId:s.event?.taskId});
       s.currentPrompt=[s.currentPrompt,e.text].filter(Boolean).join('\n补充：').slice(0,1600);
       if(s.active&&s.turnId===turnId)s.status='执行中（已接收补充）';
     }catch(err){
-      if(epoch!==(s.inputEpoch||0))return;
+      if(epoch!==(s.inputEpoch||0)){this.observe(e,{stage:err.definite?'cancelled':'uncertain',code:err.definite?'cancelled_before_submit':'supplement_uncertain',executionStatus:err.definite?'cancelled':'unknown',deliveryStatus:'not_required',threadId,turnId});return;}
       // Only a definite rejection plus a confirmed completion permits a new turn.
       if(err.definite&&!s.active&&s.threadId===threadId&&epoch===(s.inputEpoch||0)){
+        if(s.inputEvents?.has(e))s.inputEvents.get(e).submitted=false;
         if(s.deliveryPromise)await s.deliveryPromise;
         return this.startInput(e,s,input,epoch);
       }
+      this.observe(e,{stage:err.definite?'failed':'uncertain',code:err.definite?'supplement_rejected':'supplement_uncertain',executionStatus:err.definite?'failed':'unknown',deliveryStatus:'not_required',threadId,turnId});
       await this.say(e,`补充${err.definite?'未被接收':'提交状态待核实'}：${err.message}。请先 /status 核对，未重复提交。`);
     }
   }
   async startInput(e,s,input,epoch=s.inputEpoch||0) {
     if(epoch!==(s.inputEpoch||0))return;
-    const text=e.text;s.event=e;let turnRequested=false;
+    const text=e.text;s.event=e;s.previousTurnId=s.turnId;s.turnId=undefined;let turnRequested=false;
+    this.observe(e,{stage:'starting',deliveryStatus:'pending'});
     try{
       const idleExpired=s.lastAt&&Date.now()-s.lastAt>(this.config.idleHours||6)*3600000;
       if(s.threadId&&((s.turns||0)>=(this.config.rotationTurns||40)||idleExpired)){
@@ -192,13 +237,19 @@ export class Bridge {
       s.active = true; s.turnId=undefined; s.status = '执行中'; s.final = '';s.generated=[]; this.save();
       const selection=this.models?.params()||{};
       turnRequested=true;
+      if(s.inputEvents?.has(e))s.inputEvents.get(e).submitted=true;
       const r = await this.rpc.call('turn/start',{threadId:s.threadId,input,...selection});
       s.model=selection.model||s.model;s.effort=selection.effort||s.effort;
-      if (s.active) s.turnId = r.turn.id;
+      if (s.active) {s.turnId = r.turn.id;this.observe(e,{stage:'running',executionStatus:'running',deliveryStatus:'pending',threadId:s.threadId,turnId:s.turnId});}
     } catch(e2) {
-      if(epoch!==(s.inputEpoch||0)){if(e2.definite&&s.event===e){s.active=false;s.loaded=false;}return;}
+      if(epoch!==(s.inputEpoch||0)){
+        if(turnRequested)this.observe(e,{stage:e2.definite?'cancelled':'uncertain',code:e2.definite?'cancelled_before_submit':'start_uncertain',executionStatus:e2.definite?'cancelled':'unknown',deliveryStatus:'not_required',threadId:s.threadId,turnId:s.turnId});
+        if(e2.definite&&s.event===e){s.active=false;s.loaded=false;}return;
+      }
       // Never retry turn/start automatically: a lost response can still mean it started.
       if(e2.definite) s.active=false;
+      if(s.inputEvents?.has(e))s.inputEvents.get(e).finished=true;
+      this.observe(e,{stage:!turnRequested||e2.definite?'failed':s.turnId?'running':'uncertain',code:!turnRequested||e2.definite?'start_rejected':'start_uncertain',executionStatus:!turnRequested||e2.definite?'failed':s.turnId?'running':'unknown',deliveryStatus:'not_required',threadId:s.threadId,turnId:s.turnId});
       const cancelled=!s.active&&(!turnRequested||e2.definite)?this.cancelBuffered(e,s,'prepare'):[];
       s.status = `启动异常：${e2.message}${cancelled.length?`；同时取消 ${cancelled.length} 条后续消息，均未提交。`:''}`; s.last = s.status;
       if (!s.active) s.loaded = false;
@@ -209,7 +260,9 @@ export class Bridge {
     const p = m.params || {};
     for (const s of this.sessions.values()) {
       if (!p.threadId || s.threadId !== p.threadId) continue;
-      if (m.method === 'turn/started') { s.turnId = p.turn.id; s.active = true; s.status = '执行中'; }
+      const incomingTurnId=p.turn?.id||p.turnId;
+      if(incomingTurnId&&(s.turnId&&s.turnId!==incomingTurnId||!s.turnId&&s.previousTurnId===incomingTurnId))continue;
+      if (m.method === 'turn/started') { s.turnId = incomingTurnId; s.active = true; s.status = '执行中';this.observe(s.event,{stage:'running',executionStatus:'running',deliveryStatus:'pending',threadId:s.threadId,turnId:s.turnId,confirmed:Boolean(incomingTurnId)}); }
       if(m.method==='thread/tokenUsage/updated'){s.tokenUsage=p.tokenUsage;}
       if(m.method==='item/completed'&&p.item?.type==='contextCompaction'){s.compactions=(s.compactions||0)+1;s.status='上下文已压缩，继续执行';}
       if (m.method === 'item/started' && p.item?.type === 'commandExecution') s.status = '正在执行命令';
@@ -221,27 +274,50 @@ export class Bridge {
       }
       if (m.method === 'turn/completed') {
         s.active = false; s.status = `任务${p.turn.status === 'completed' ? '完成' : p.turn.status === 'interrupted' ? '已停止' : '失败'}`;
+        const executionStatus=p.turn.status==='completed'?'completed':p.turn.status==='interrupted'?'interrupted':'failed';
+        this.observe(s.event,{stage:executionStatus,executionStatus,deliveryStatus:'pending',code:executionStatus==='failed'?'model_failed':executionStatus==='interrupted'?'model_interrupted':undefined,threadId:s.threadId,turnId:incomingTurnId||s.turnId,confirmed:Boolean(incomingTurnId)});
         s.last = s.final || p.turn.error?.message || s.status;
         if(s.event)this.onResult?.(s.event,{text:s.last,status:p.turn.status,threadId:s.threadId,turnId:s.turnId});
         s.turns=(s.turns||0)+1;s.lastAt=Date.now();s.recent=[...(s.recent||[]),{prompt:s.currentPrompt||'',result:s.last.slice(0,1000)}].slice(-3);
         for (const [id,q] of this.questions) if(q.threadId===s.threadId) this.questions.delete(id);
         this.save(); if(s.event){
           // Commands can reset the session while its completed result is being delivered.
-          const delivery={event:s.event,last:s.last,generated:[...(s.generated||[])]};
-          s.delivering=true;s.deliveryPromise=this.deliver(delivery).catch(err=>this.log(`结果发送失败：${err.message}`)).finally(()=>{s.delivering=false;s.deliveryPromise=null;});
+          const delivery={event:s.event,last:s.last,generated:[...(s.generated||[])],executionStatus,threadId:s.threadId,turnId:p.turn.id||s.turnId};
+          s.delivering=true;s.deliveryPromise=this.deliver(delivery).catch(err=>{this.observe(delivery.event,{stage:executionStatus==='completed'?'uncertain':executionStatus,executionStatus,deliveryStatus:'unknown',code:'reply_uncertain',threadId:delivery.threadId,turnId:delivery.turnId});this.log(`结果发送失败：${err.message}`);}).finally(()=>{s.delivering=false;s.deliveryPromise=null;});
         }
       }
       if (m.method === 'serverRequest/resolved') {
-        for(const [id,q] of this.questions) if(q.rpcId===p.requestId) this.questions.delete(id);
+        let resolved=false;for(const [id,q] of this.questions) if(q.rpcId===p.requestId){this.questions.delete(id);resolved=true;}
+        if(resolved&&s.active)this.observe(s.event,{stage:'running',executionStatus:'running',threadId:s.threadId,turnId:s.turnId});
       }
     }
   }
   async deliver(s) {
-    if(!this.media){await this.say(s.event,s.last);return;}
+    const executionStatus=s.executionStatus||'completed';
+    this.observe(s.event,{stage:'delivering',executionStatus,deliveryStatus:'delivering',threadId:s.threadId,turnId:s.turnId});
     const files=[...(s.generated||[]),...[...s.last.matchAll(/!?\[[^\]]*\]\((?:<([^>]+)>|([^\n)]+))\)/g)].map(m=>(m[1]||m[2]).replace(/:\d+$/,''))];
-    const allowed=[...new Set(files)].filter(f=>path.isAbsolute(f)&&fs.existsSync(f)&&fs.statSync(f).isFile()&&this.config.allowedRoots.some(r=>within(r,f))).slice(0,3);
-    await this.say(s.event,s.last.slice(0,allowed.length?1400:5500));
-    for(const file of allowed){try{await this.media.sendFile(s.event,file);}catch(err){this.log(`富媒体回复失败：${err.message}`);await this.say(s.event,`附件 ${path.basename(file)} 发送失败：${err.message}。可稍后用 /file ${file} 重取。`);}}
+    const candidates=this.media?[...new Set(files)].filter(f=>path.isAbsolute(f)&&fs.existsSync(f)&&fs.statSync(f).isFile()&&this.config.allowedRoots.some(r=>within(r,f))):[];
+    const allowed=candidates.slice(0,3),limit=this.media?(allowed.length?1400:5500):s.last.length;
+    const report=await this.sendReport(s.event,s.last.slice(0,limit));
+    let acceptedParts=report.acceptedParts,uncertain=report.uncertain,failed=report.status==='failed'||report.status==='unknown'||report.error&&report.status!=='sent';
+    let truncated=report.truncated||s.last.length>limit||candidates.length>allowed.length,attachmentFailure=false,auditFailed=report.auditFailed;
+    for(const file of allowed){
+      try{await this.media.sendFile(s.event,file);acceptedParts++;}
+      catch(err){
+        acceptedParts+=Number(err.acceptedParts)||0;
+        const definite=err.definite===true||(err.definite!==false&&Number(err.status)>=400&&Number(err.status)<500&&Number(err.status)!==408);
+        uncertain ||= err.uncertain??(!definite&&!err.accepted);
+        auditFailed ||= err.auditFailed;
+        if(!err.accepted){failed=true;attachmentFailure=true;}
+        this.log(`富媒体回复失败：${err.message}`);
+        await this.say(s.event,`附件 ${path.basename(file)} 发送失败：${err.message}。可稍后用 /file ${file} 重取。`);
+      }
+    }
+    const deliveryStatus=failed||truncated?(acceptedParts?'partial':uncertain?'unknown':'failed'):'sent';
+    const code=attachmentFailure?(uncertain?'attachment_uncertain':'attachment_failed'):uncertain?'reply_uncertain':truncated?'reply_truncated':failed?(acceptedParts?'reply_partial':'reply_rejected'):auditFailed?'reply_audit_failed':undefined;
+    const stage=executionStatus==='completed'&&(uncertain||deliveryStatus==='unknown')?'uncertain':executionStatus;
+    this.observe(s.event,{stage,executionStatus,deliveryStatus,code,threadId:s.threadId,turnId:s.turnId});
+    return {status:deliveryStatus,acceptedParts,truncated,uncertain,code};
   }
   request(m) {
     const p = m.params || {}, entry = [...this.sessions].find(([,s])=>s.threadId===p.threadId && s.active);
@@ -253,6 +329,7 @@ export class Bridge {
     const q={rpcId:m.id, method:m.method, params:p, key,threadId:s.threadId,turnId:p.turnId||s.turnId,nonce:crypto.randomBytes(16).toString('hex'),selections:{}};
     this.questions.set(id,q);
     s.status = `等待${approval?'审批':'回答'} ${id}`;
+    this.observe(s.event,{stage:approval?'waiting_approval':'waiting_input',executionStatus:'running',threadId:s.threadId,turnId:q.turnId});
     const content = approval ? `${p.command || p.reason || p.grantRoot || '文件变更'}\n/approve ${id} 同意；/deny ${id} 拒绝` : `${(p.questions || []).map(q=>`${q.header || ''} ${q.question}\n${(q.options || []).map(o=>o.label).join(' / ')}`).join('\n')}\n/answer ${id} 你的回答（多题用 | 分隔）`;
     void this.say(s.event,`请求 ${id}\n${content}`,requestButtons(s.event,id,q));
   }
@@ -277,7 +354,7 @@ export class Bridge {
       if(decision==='accept' && q.params.availableDecisions && !q.params.availableDecisions.includes('accept')) return this.say(e,'该请求不支持普通同意，使用 /deny 拒绝后在桌面处理。');
       this.rpc.reply(q.rpcId,{decision});
     }
-    this.questions.delete(match[2]); this.session(e).status='执行中'; return this.say(e,'已提交你的选择。');
+    this.questions.delete(match[2]); const s=this.session(e);s.status='执行中';this.observe(s.event,{stage:'running',executionStatus:'running',threadId:s.threadId,turnId:s.turnId}); return this.say(e,'已提交你的选择。');
   }
   validQuestion(e,q){const s=this.sessions.get(this.key(e));return Boolean(q&&q.key===this.key(e)&&s?.active&&s.threadId===q.threadId&&(!q.turnId||!s.turnId||q.turnId===s.turnId));}
   async transfer(fn){this.mediaTransfers++;try{return await fn();}finally{this.mediaTransfers--;}}
@@ -287,7 +364,7 @@ export class Bridge {
     if(!this.validQuestion(e,q)||!q.method.includes('requestUserInput')||!this.validNonce(q,match[2]))return this.say(e,'按钮已过期或不属于这个会话，未提交回答。');
     const qi=Number(match[3]),oi=Number(match[4]),questions=q.params.questions||[],option=questions[qi]?.options?.[oi];
     if(!option)return this.say(e,'选项不存在。');q.selections[qi]=option.label;
-    if(questions.every((_,i)=>Object.hasOwn(q.selections,i))){this.rpc.reply(q.rpcId,{answers:Object.fromEntries(questions.map((x,i)=>[x.id,{answers:[q.selections[i]]}]))});this.questions.delete(match[1]);this.session(e).status='执行中';return this.say(e,'已提交你的选择。');}
+    if(questions.every((_,i)=>Object.hasOwn(q.selections,i))){this.rpc.reply(q.rpcId,{answers:Object.fromEntries(questions.map((x,i)=>[x.id,{answers:[q.selections[i]]}]))});this.questions.delete(match[1]);const s=this.session(e);s.status='执行中';this.observe(s.event,{stage:'running',executionStatus:'running',threadId:s.threadId,turnId:s.turnId});return this.say(e,'已提交你的选择。');}
     return this.say(e,`第 ${qi+1} 题已选择：${option.label}。请继续选择其他题，或用 /answer ${match[1]} 回答全部问题。`);
   }
 }

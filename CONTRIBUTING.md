@@ -29,9 +29,12 @@ npm test
 node --test tests/ui.test.mjs
 node --test tests/bridge-input.test.mjs tests/message-batches.test.mjs
 npm run benchmark
+npm run preview:tasks
 ```
 
 测试数量以当次输出为准。`npm run probe` 和 `scripts/probes/` 中的脚本会调用实际 Codex；运行前先阅读脚本，确认是否创建任务、写文件、占用模型或发消息，选择独立测试会话。验证 JSON 留在 `exports/verification/reports/`，不提交原始对话。
+
+`npm run preview:tasks` 是单独的离线 UI 夹具，只创建临时合成数据，不调用 QQ/Codex；结束后输入 `quit` 或按 Ctrl+C 清理。它用于任务界面检查，不代表已经具备完整独立运行实例，说明见 [TASKS](docs/TASKS.md#离线预览和验证)。
 
 `npm run check` 检查语法、模块导入和页面资源；`npm run benchmark` 运行可复现的合成性能对照。性能改动需同时核对行为等价，方法与数据口径见 [PERFORMANCE](docs/PERFORMANCE.md)，不将基准结果扩大为端到端提速。
 

@@ -9,7 +9,13 @@ import { Memory } from './memory.mjs';
 import { Models } from './models.mjs';
 import { MessageBatches } from './message-batches.mjs';
 export class Accounts {
-  constructor(config,qq,runtime,persist,log,history=null){this.config=config;this.qq=qq;this.runtime=runtime;this.persist=persist;this.log=log;this.history=history;this.instances=new Map();this.starting=new Map();}
+  constructor(config,qq,runtime,persist,log,history=null,tasks=null){this.config=config;this.qq=qq;this.runtime=runtime;this.persist=persist;this.log=log;this.history=history;this.tasks=tasks;this.taskTrackingError=new Map();this.instances=new Map();this.starting=new Map();}
+  taskEvent(user,e,details){
+    if(!this.tasks)return;
+    try{const task=this.tasks.ensure(user.id,e);const id=typeof task==='string'?task:task.id;this.tasks.record(user.id,id,details);return id;}
+    catch{this.taskTrackingError.set(user.id,true);}
+  }
+  taskSummary(user,e){try{const summary=this.tasks?.summary(user.id,{chat:e.chat,group:e.group})||'';return summary+(this.taskTrackingError.has(user.id)?'\n任务阶段记录不完整；执行未受影响。':'');}catch{this.taskTrackingError.set(user.id,true);return '任务诊断暂不可用';}}
   userKey(id){return crypto.createHash('sha256').update(this.config.appId+':'+id).digest('hex').slice(0,24);}
   async get(user){
     if(this.instances.has(user.id)){const existing=this.instances.get(user.id);if(existing.rpc.child?.exitCode===null&&!existing.rpc.child.killed)return existing;this.instances.delete(user.id);}
@@ -30,11 +36,12 @@ export class Accounts {
       this.history?.importCodex(user.id);
       const media=new Media(this.config,this.qq);media.onMedia=(e,files,text)=>this.history?.record(user.id,{kind:'assets',messageId:e.id,threadId:e.historyThreadId,files,text});
       const bridge=new Bridge(userConfig,rpc,(e,text,buttons)=>buttons?.length?this.qq.sendButtons(e,text,buttons):this.qq.send(e,text),this.persist,path.join(stateDir,'sessions.json'),this.log,media,new Memory(path.join(this.runtime,'global-memory.json'),path.join(stateDir,'private-memory.json')));
+      bridge.onTaskEvent=(e,details)=>this.taskEvent(user,e,details);bridge.taskSummary=e=>this.taskSummary(user,e);
       const batches=new MessageBatches({delayMs:this.config.messageMergeMs??3000,maxWaitMs:10000,handle:e=>bridge.handle(e),onError:async(e,err)=>{
         this.log(`消息处理失败：${err.message}`);
         this.history?.record(user.id,{kind:'error',messageId:e.id,threadId:e.historyThreadId,text:err.message});
         await bridge.say(e,`消息处理失败：${err.message}`);
-      }});
+      },observer:bridge.onTaskEvent});
       bridge.pendingFor=e=>batches.pendingFor(e);bridge.cancelPending=e=>batches.cancel(e);
       rpc.on('offline',()=>batches.cancelAll());
       bridge.onResult=(e,result)=>this.history?.record(user.id,{kind:result.status==='failed'?'error':'result',messageId:e.id,...result});
@@ -59,10 +66,14 @@ export class Accounts {
       await this.qq.send(e,'已绑定独立账号。直接发送文字、图片、语音、视频或文件即可使用。/help 查看指令。');return;
     }
     if(e.group&&!(user.allowedGroups||[]).includes(e.chat))return;
+    e.receivedAt=Date.now();
     if(this.history&&!this.history.hasInbound(user.id,e.id))this.history.record(user.id,{kind:'inbound',messageId:e.id,text:e.text,chat:e.chat,group:e.group,attachments:(e.attachments||[]).map(a=>({filename:a.filename||'',type:a.content_type||'',size:a.size||0,host:a.url?new URL(a.url.startsWith('//')?'https:'+a.url:a.url).hostname:''}))});
-    const {bridge,batches}=await this.get(user);e.historyThreadId=bridge.sessions.get(bridge.key(e))?.threadId;
+    let instance;
+    try{instance=await this.get(user);}
+    catch(err){if(!e.text.startsWith('/')||e.text.startsWith('/codex ')){this.taskEvent(user,e,{stage:'received'});this.taskEvent(user,e,{stage:'failed',code:'initialization_failed',executionStatus:'failed',deliveryStatus:'not_required'});}throw err;}
+    const {bridge,batches}=instance;e.historyThreadId=bridge.sessions.get(bridge.key(e))?.threadId;
     if(e.historyThreadId)this.history?.bindMessage(user.id,e.id,e.historyThreadId);
-    if(bridge.seen.has(e.id))return;
+    if(bridge.hasSeen(e))return;
     if(batches&&(!e.text.startsWith('/')||e.text.startsWith('/codex ')))await batches.push(e);
     else await bridge.handle(e);
   }

@@ -65,6 +65,8 @@ HTTP 存活、守护运行、QQ 在线和 Codex 可执行分别检查。管理�
 
 用户已在本机确认会话切换正常，先前体感卡顿来自远程软件。出现新问题仍按当前时间窗取证，不将过去远程操作的延迟当作本机查询故障。性能对照方法见 [PERFORMANCE](PERFORMANCE.md)。
 
+历史页展开“账号最近任务”可分开检查模型执行和 QQ 投递，并查看中文阶段原因；QQ `/status` 提供当前聊天的短任务号与摘要。任务记录只覆盖升级后新任务，采集失败和待确认状态不能当成没有执行；先核对结果，勿自动重提或补发。恢复、接口和离线预览见 [TASKS](TASKS.md)。
+
 ### 工作区路由发现失败
 
 `workspace routing discovery failed` 是 Codex 返回的执行错误。对照历史中的失败时间，以及对应账号 `codex-home/sessions` 的 `task_complete`、`codex-home/logs_2.sqlite` 的路由与重试记录，区分任务仍在执行和已经失败。Codex 可能先重试 WebSocket，再回退 HTTP；切换传输后仍报同一错误时，检查共同的路由发现环节，不能仅据此判定图片解析或 QQ 网关异常。

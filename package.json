@@ -8,6 +8,7 @@
     "start": "node server.mjs",
     "check": "node scripts/check.mjs",
     "benchmark": "node scripts/benchmarks/performance.mjs",
+    "preview:tasks": "node scripts/probes/task-ui-preview.mjs",
     "test": "node --test tests/*.test.mjs",
     "probe": "node scripts/probes/probe.mjs"
   },

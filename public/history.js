@@ -3,6 +3,77 @@ let user='',thread='',sessions=[],sessionNext=null,pageStack=[''],next=null,wate
 const api=(url,body,signal)=>qqUI.request(url,body,signal,body?60000:10000);
 let pageFailed=false,hasPage=false,pageLoading=false,accountLoading=false,sessionsLoading=false,sessionsRequest=0,exporting=false,controlsBusy=false,lastNavigationUnlock=-Infinity;
 const viewLoading=()=>pageLoading||accountLoading;
+// This read-only view owns its requests and errors independently of message pages.
+const taskView=(()=>{
+  let account='',epoch=0,busy=false,controller=null,detailController=null,detailKey='',detailHost=null,opened='',signature='',rows=[],cache=new Map();
+  const taskKey=task=>task.id+'|'+task.updatedAt+'|'+task.eventCount;
+  const node=(tag,value,className)=>{const element=document.createElement(tag);if(value!==undefined)element.textContent=value;if(className)element.className=className;return element;};
+  const time=value=>{const date=new Date(value);return Number.isNaN(date.getTime())?'时间未知':date.toLocaleString('zh-CN');};
+  const problem=task=>task.executionStatus==='unknown'?'执行结果不明确，请先核对任务，勿重复提交':task.executionStatus==='failed'?'执行失败，请查看阶段记录':
+    task.deliveryStatus==='unknown'?'投递状态不明确，请先核对 QQ 收件':task.deliveryStatus==='partial'?'结果仅部分投递':task.deliveryStatus==='failed'?'结果投递失败':'';
+  function reset(id){
+    account=id;epoch++;controller?.abort();detailController?.abort();controller=detailController=null;busy=false;opened='';signature='';rows=[];cache.clear();
+    $('taskList').replaceChildren();$('taskDiagnostics').textContent='';$('taskError').hidden=true;$('taskLoading').hidden=true;$('taskRefresh').disabled=!account;
+    $('taskEmpty').hidden=false;$('taskEmpty').textContent=account?'升级后的新任务会在这里记录':'请选择账号';
+  }
+  async function detail(task,container){
+    const ticket=epoch,owner=account,key=taskKey(task);
+    if(cache.has(key)){container.replaceChildren(cache.get(key));return;}
+    if(detailKey===key&&detailHost===container&&!detailController?.signal.aborted)return;
+    detailKey=key;detailHost=container;
+    detailController?.abort();const active=detailController=new AbortController();container.replaceChildren(node('div','正在读取阶段记录…','task-note'));
+    try{
+      const data=await api('/api/tasks/'+encodeURIComponent(task.id)+'?'+new URLSearchParams({user:owner}),null,active.signal);
+      if(ticket!==epoch||owner!==account||active.signal.aborted||opened!==task.id)return;
+      if(data.task?.user!==owner||data.task.id!==task.id)throw new Error('任务不属于当前账号');
+      const events=Array.isArray(data.task.events)?data.task.events.slice(-100):[],list=node('ol',undefined,'task-events');
+      for(const event of events)list.append(node('li',`${time(event.createdAt||event.time)} · ${event.label||event.stage}${event.codeLabel?' · '+event.codeLabel:''}`));
+      const content=node('div');content.append(list);
+      if(!events.length)content.append(node('div','尚无阶段记录','task-note'));
+      if(data.task.eventCount>events.length)content.append(node('div',`仅显示最近 ${events.length} 个阶段，共 ${data.task.eventCount} 个`,'task-note'));
+      cache.set(key,content);container.replaceChildren(content);
+    }catch(error){if(ticket===epoch&&owner===account&&!active.signal.aborted&&opened===task.id){const retry=node('button','重新读取阶段');retry.type='button';retry.onclick=()=>void detail(task,container);container.replaceChildren(node('div',error.auth?'请先验证页面登录':'阶段记录暂时不可用','task-error'),retry);}}
+    finally{if(detailController===active){detailKey='';detailHost=null;}}
+  }
+  function render(){
+    const nextSignature=JSON.stringify(rows);if(signature===nextSignature)return;signature=nextSignature;
+    const validKeys=new Set(rows.map(taskKey));for(const key of cache.keys())if(!validKeys.has(key))cache.delete(key);
+    if(!rows.some(task=>task.id===opened)){opened='';detailController?.abort();}
+    const cards=rows.map(task=>{
+      const card=node('details',undefined,'task-card'),summary=node('summary'),body=node('div');card.dataset.id=task.id;
+      summary.append(node('div',task.title||'未命名任务','task-title'),node('div',`任务 ${String(task.id).slice(0,8)}${task.parentTaskId?' · 补充至 '+String(task.parentTaskId).slice(0,8):''} · 阶段：${task.stageLabel||task.stage||'待处理'} · ${time(task.updatedAt)}`,'task-status'),
+        node('div',`执行：${task.executionLabel||task.executionStatus||'待处理'} · 投递：${task.deliveryLabel||task.deliveryStatus||'待处理'}`,'task-status'));
+      const issue=problem(task);if(issue)summary.append(node('div',issue,'task-problem'));card.append(summary,body);
+      card.ontoggle=()=>{
+        if(!Array.from($('taskList').children).includes(card))return;
+        if(card.open){opened=task.id;for(const other of $('taskList').children)if(other!==card)other.open=false;void detail(task,body);}
+        else if(opened===task.id){opened='';detailController?.abort();}
+      };
+      if(opened===task.id){card.open=true;void detail(task,body);}return card;
+    });
+    $('taskList').replaceChildren(...cards);$('taskEmpty').hidden=rows.length>0;$('taskEmpty').textContent='暂无任务记录；升级后的新任务会在这里记录';
+  }
+  async function refresh(){
+    if(!account||!$('taskPanel').open||busy||document.hidden||viewLoading())return;
+    const ticket=epoch,owner=account,active=controller=new AbortController();busy=true;$('taskLoading').hidden=false;$('taskRefresh').disabled=true;
+    try{
+      const results=await Promise.allSettled([api('/api/tasks?'+new URLSearchParams({user:owner,limit:'10'}),null,active.signal),api('/api/diagnostics?'+new URLSearchParams({user:owner}),null,active.signal)]);
+      if(ticket!==epoch||owner!==account||active.signal.aborted)return;
+      const [tasks,diagnostics]=results;
+      if(tasks.status==='fulfilled'&&Array.isArray(tasks.value.tasks)){
+        rows=tasks.value.tasks.filter(task=>task.user===owner).slice(0,10);render();$('taskError').hidden=true;
+      }else{$('taskError').hidden=false;$('taskError').textContent=tasks.reason?.auth?'请先验证页面登录以读取任务':'任务状态暂时不可用，已显示的记录会保留';}
+      if(diagnostics.status==='fulfilled'&&diagnostics.value.user===owner){
+        const value=diagnostics.value;$('taskDiagnostics').textContent=[value.qq?.label,value.process?.label,value.tracking?.label,value.model?.label,...(Array.isArray(value.problems)?value.problems:[])].filter(Boolean).join(' · ');
+      }else $('taskDiagnostics').textContent='诊断摘要暂时不可用';
+    }catch{
+      if(ticket===epoch&&owner===account&&!active.signal.aborted){$('taskError').hidden=false;$('taskError').textContent='任务状态暂时不可用，已显示的记录会保留';}
+    }finally{if(ticket===epoch&&owner===account){busy=false;$('taskLoading').hidden=true;$('taskRefresh').disabled=false;}}
+  }
+  function pause(){controller?.abort();detailController?.abort();epoch++;busy=false;opened='';for(const card of $('taskList').children)card.open=false;$('taskLoading').hidden=true;$('taskRefresh').disabled=!account;}
+  $('taskPanel').ontoggle=()=>{if($('taskPanel').open)void refresh();else pause();};$('taskRefresh').onclick=()=>void refresh();
+  return {reset,refresh,pause};
+})();
 function navigationBlocked(event){return viewLoading()||Boolean(event&&Number.isFinite(event.timeStamp)&&event.timeStamp<=lastNavigationUnlock);}
 function afterPaint(){
   if(document.hidden||typeof requestAnimationFrame!=='function')return Promise.resolve();
@@ -82,8 +153,8 @@ async function loadSessions(older=false){
 }
 async function selectSession(id){if(viewLoading()||id===thread)return;invalidate();thread=id;qqUI.write('qq-history-thread:'+user,id);resetPage('正在读取会话消息…');$('search').value='';$('exported').hidden=true;$('renameForm').hidden=true;renderSessions();await loadPage();}
 async function selectAccount(id){
-  if(viewLoading()||id===user)return;invalidate();accountLoading=true;user=id;qqUI.write('qq-history-user',id);thread='';sessions=[];sessionNext=null;sessionSignature='';resetPage('正在读取会话…');$('search').value='';$('sessionTitle').textContent='请选择会话';$('sessions').replaceChildren();$('moreSessions').hidden=true;$('rename').hidden=true;$('renameForm').hidden=true;$('exported').hidden=true;for(const el of $('users').children)el.classList.toggle('selected',el.dataset.id===user);syncControls();
-  try{await loadSessions();if(!sessions.length){$('empty').textContent='暂无会话，QQ 发送新任务后会在这里出现';$('pageInfo').textContent='0 条消息';}}finally{accountLoading=false;syncControls();}
+  if(viewLoading()||id===user)return;invalidate();accountLoading=true;user=id;taskView.reset(id);qqUI.write('qq-history-user',id);thread='';sessions=[];sessionNext=null;sessionSignature='';resetPage('正在读取会话…');$('search').value='';$('sessionTitle').textContent='请选择会话';$('sessions').replaceChildren();$('moreSessions').hidden=true;$('rename').hidden=true;$('renameForm').hidden=true;$('exported').hidden=true;for(const el of $('users').children)el.classList.toggle('selected',el.dataset.id===user);syncControls();
+  try{await loadSessions();if(!sessions.length){$('empty').textContent='暂无会话，QQ 发送新任务后会在这里出现';$('pageInfo').textContent='0 条消息';}}finally{accountLoading=false;syncControls();void taskView.refresh();}
 }
 async function loadPage(){
   if(!user||!thread)return;const epoch=invalidate(),controller=request=new AbortController();pageLoading=true;syncControls();
@@ -105,4 +176,4 @@ $('rename').onclick=e=>{if(navigationBlocked(e))return;$('titleInput').value=ses
 $('renameForm').onsubmit=async e=>{e.preventDefault();if(navigationBlocked(e))return;const account=user,id=thread;try{const d=await api('/api/history/title',{user:account,thread:id,title:$('titleInput').value});if(account===user&&id===thread){const s=sessions.find(x=>x.id===id);if(s)s.title=d.title;renderSessions();$('renameForm').hidden=true;}}catch(e){if(account===user&&id===thread)error(e);}};
 $('export').onclick=async()=>{if(!user||!thread||viewLoading()||exporting)return;const account=user,id=thread;exporting=true;syncControls();try{const d=await api('/api/export',{user:account,thread:id});if(account===user&&id===thread){$('exported').textContent=`已导出本会话 ${d.count} 条记录：${d.file}`;$('exported').hidden=false;}}catch(e){if(account===user&&id===thread)error(e);}finally{exporting=false;syncControls();}};
 for(const id of ['users','sessions'])for(const type of ['pointerdown','click','keydown'])$(id).addEventListener(type,e=>{if((type!=='keydown'||e.key==='Enter'||e.key===' ')&&navigationBlocked(e)){e.preventDefault();e.stopImmediatePropagation();}},true);
-syncControls();window.addEventListener('pagehide',disposeAssets);document.addEventListener('qq-ui-retry',()=>void poll(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden)void poll(true);});void poll(true);setInterval(poll,10000);
+syncControls();window.addEventListener('pagehide',()=>{disposeAssets();taskView.pause();});document.addEventListener('qq-ui-retry',()=>{void poll(true);void taskView.refresh();});document.addEventListener('visibilitychange',()=>{if(!document.hidden){void poll(true);void taskView.refresh();}});void poll(true);setInterval(poll,10000);setInterval(()=>void taskView.refresh(),10000);

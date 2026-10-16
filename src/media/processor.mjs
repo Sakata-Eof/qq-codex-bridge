@@ -9,7 +9,7 @@ import { safeMediaURL } from '../qq/media-url.mjs';
 import { within } from '../shared/path-security.mjs';
 const run=promisify(execFile);
 export class Media {
-  constructor(config,qq){this.config=config;this.qq=qq;}
+  constructor(config,qq,{run:runCommand=run}={}){this.config=config;this.qq=qq;this.runCommand=runCommand;}
   async download(url,target) {
     let current=safeMediaURL(url);
     for(let i=0;i<4;i++){
@@ -73,8 +73,10 @@ export class Media {
     return file;
   }
   async sendFile(e,file){
-    if(['.flac','.m4a','.aac','.aiff','.aif','.amr'].includes(path.extname(file).toLowerCase())){const target=file+'.qq.mp3';await run(this.config.ffmpeg,['-v','error','-y','-i',file,'-ac','1','-ar','24000',target],{windowsHide:true,timeout:120000});file=target;}
-    await this.qq.sendFile(e,file);
+    try{
+      if(['.flac','.m4a','.aac','.aiff','.aif','.amr'].includes(path.extname(file).toLowerCase())){const target=file+'.qq.mp3';await this.runCommand(this.config.ffmpeg,['-v','error','-y','-i',file,'-ac','1','-ar','24000',target],{windowsHide:true,timeout:120000});file=target;}
+    }catch(err){throw Object.assign(err,{definite:true,uncertain:false,acceptedParts:0});}
+    return this.qq.sendFile(e,file);
   }
   async smoke(e,cwd){
     const folder=path.join(cwd,'.qq-outgoing',crypto.randomBytes(8).toString('hex'));fs.mkdirSync(folder,{recursive:true});

@@ -11,6 +11,9 @@ import { markdownText } from './controls.mjs';
 import { splitMarkdown } from './markdown.mjs';
 
 const markdownRejected=err=>err.definite!==false&&!(Number(err.status)>=500)&&([22006,304061,40034011,40034029,40034127].includes(Number(err.code))||err.status===403);
+const definiteRejection=err=>err.definite===true||(err.definite!==false&&Number(err.status)>=400&&Number(err.status)<500&&Number(err.status)!==408)||markdownRejected(err);
+const quotaError=()=>Object.assign(new Error('QQ 当前消息回复次数已用完'),{definite:true});
+function deliveryError(err,report){try{Object.assign(err,report);}catch{}return err;}
 function splitPlain(value,limit=1300){
   const parts=[];let text=String(value);
   while(text){
@@ -27,7 +30,7 @@ export class QQ extends EventEmitter {
   async json(url, options={}) {
     const dispatcher=this.config.qqProxy ? (this.proxy ||= new ProxyAgent(this.config.qqProxy)) : undefined;
     const response=await fetch(url,{...options,dispatcher,signal:AbortSignal.timeout(20000)});
-    let data; try {data=await response.json();} catch {throw new Error(`QQ HTTP ${response.status} 非 JSON 响应`);}
+    let data; try {data=await response.json();} catch {throw Object.assign(new Error(`QQ HTTP ${response.status} 非 JSON 响应`),{status:response.status});}
     if(!response.ok || (data.code && data.code!==0)){const error=new Error(`QQ HTTP ${response.status} 业务错误 ${data.code || 'unknown'}`);error.status=response.status;error.code=data.code;throw error;}
     return data;
   }
@@ -92,18 +95,20 @@ export class QQ extends EventEmitter {
     let plain=options.format==='plain'||this.config.replyFormat==='plain';
     const parts=plain?splitPlain(text):splitMarkdown(String(text),1300),max=(e.group?5:4)-(options.reserve||0);
     const endpoint=`/v2/${e.group?'groups':'users'}/${encodeURIComponent(e.chat)}/messages`;
-    if(!parts.length||max<1||(this.counts.get(e.id)||0)>=max)throw new Error('QQ 当前消息回复次数已用完');
-    for(let i=0;i<parts.length;i++){
+    if(!parts.length||max<1||(this.counts.get(e.id)||0)>=max)throw deliveryError(quotaError(),{acceptedParts:0,totalParts:parts.length,uncertain:false});
+    let acceptedParts=0,wasTruncated=false;
+    try{for(let i=0;i<parts.length;i++){
       let accepted=false;
       const post=async asPlain=>{
-        const sequence=(this.counts.get(e.id)||0)+1;if(sequence>max)throw new Error('QQ 当前消息回复次数已用完');
+        const sequence=(this.counts.get(e.id)||0)+1;if(sequence>max)throw quotaError();
         this.counts.set(e.id,sequence);
         const truncated=sequence===max&&i<parts.length-1,notice=truncated?'\n（结果较长，完整内容保存在本机配置页。）':'';
         const source=parts[i].text+notice,rendered=(asPlain?parts[i].text:parts[i].markdown)+notice;
         // A timeout may mean the message arrived. Only a definite rejection permits fallback.
         await this.api(endpoint,{...(asPlain?{msg_type:0,content:rendered}:{msg_type:2,markdown:{content:rendered}}),msg_id:e.id,msg_seq:sequence});
-        accepted=true;
-        this.emit('sent',{event:e,text:source,sequence,format:asPlain?'plain':'markdown',renderedText:rendered});
+        accepted=true;acceptedParts++;wasTruncated ||= truncated;
+        try{this.emit('sent',{event:e,text:source,sequence,format:asPlain?'plain':'markdown',renderedText:rendered});}
+        catch(err){throw deliveryError(err,{accepted:true,auditFailed:true,uncertain:false});}
         return truncated;
       };
       let truncated;
@@ -115,8 +120,9 @@ export class QQ extends EventEmitter {
         truncated=await post(true);
       }
       if(truncated)break;
-    }
+    }}catch(err){throw deliveryError(err,{acceptedParts,totalParts:parts.length,truncated:wasTruncated,uncertain:err.uncertain??(!err.accepted&&!definiteRejection(err))});}
     if(this.counts.size>2000)this.counts.delete(this.counts.keys().next().value);
+    return {acceptedParts,totalParts:parts.length,truncated:wasTruncated};
   }
   async sendPlain(e,text,options={}) {return this.send(e,text,{...options,format:'plain'});}
   async sendAnnouncement(user,text) {
@@ -153,6 +159,8 @@ export class QQ extends EventEmitter {
     }
   }
   async sendFile(e,file){
+    let messageAttempted=false,accepted=false;
+    try{
     if((this.counts.get(e.id)||0)>=(e.group?5:4))throw new Error('回复次数已用完，请用 /file 指令重新请求');
     const size=fs.statSync(file).size;if(size>50*1024*1024)throw new Error('发送文件上限 50MB');if(!size)throw new Error('不能发送空文件');
     const data=fs.readFileSync(file),ext=path.extname(file).toLowerCase();
@@ -176,7 +184,9 @@ export class QQ extends EventEmitter {
     const result=await this.api(prefix+'/files',{file_type:type,upload_id:prep.upload_id,file_name:path.basename(file),srv_send_msg:false});
     const info=result.file_info||result.data?.file_info;if(!info)throw new Error('QQ 文件上传未返回 file_info');
     const n=(this.counts.get(e.id)||0)+1;if(n>(e.group?5:4))throw new Error('回复次数已用完，请用 /file 指令重新请求');this.counts.set(e.id,n);
-    await this.api(prefix+'/messages',{msg_type:7,media:{file_info:info},msg_id:e.id,msg_seq:n});
+    messageAttempted=true;await this.api(prefix+'/messages',{msg_type:7,media:{file_info:info},msg_id:e.id,msg_seq:n});accepted=true;
     this.emit('sent',{event:e,file,text:path.basename(file),sequence:n});
+    return {acceptedParts:1,totalParts:1,truncated:false};
+    }catch(err){throw deliveryError(err,{accepted,acceptedParts:accepted?1:0,totalParts:1,auditFailed:accepted,uncertain:messageAttempted&&!accepted&&!definiteRejection(err),...(!messageAttempted?{definite:true}:{})});}
   }
 }

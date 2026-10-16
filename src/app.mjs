@@ -9,7 +9,9 @@ import { Accounts } from './core/accounts.mjs';
 import { QQ } from './qq/client.mjs';
 import { Memory } from './core/memory.mjs';
 import { History } from './history/store.mjs';
+import { TaskStore } from './history/task-store.mjs';
 import { createHistoryRoutes } from './http/history-routes.mjs';
+import { createTaskRoutes } from './http/task-routes.mjs';
 import { syncCommands, syncQuickMenu } from './qq/commands.mjs';
 import { authorizeUI, browserCookie } from './http/auth.mjs';
 import { ReleaseNotifications } from './ops/release-notifications.mjs';
@@ -32,7 +34,10 @@ if(process.platform==='win32'){
 }
 const logs=[];
 function log(text){const line=`${new Date().toISOString()} ${text}`;logs.push(line);if(logs.length>50)logs.shift();fs.appendFileSync(path.join(runtime,'service.log'),line+'\n');console.log(line);}
-const qq=new QQ(config,log),history=new History(config,runtime),accounts=new Accounts(config,qq,runtime,persist,log,history);
+const qq=new QQ(config,log),history=new History(config,runtime),tasks=new TaskStore(history);
+const recoveredTasks=tasks.recoverPending();
+if(recoveredTasks)log(`重启后有 ${recoveredTasks} 个任务状态需要核实，未自动重新提交`);
+const accounts=new Accounts(config,qq,runtime,persist,log,history,tasks);
 const releases=new ReleaseNotifications({file:path.join(runtime,'release-notifications.json'),users:()=>config.users,enabled:config.releaseNotificationsEnabled===true,
   send:(user,text)=>qq.sendAnnouncement(user,text),
   record:(user,entry)=>history.record(user.id,{kind:entry.status==='sent'?'outbound':'error',messageId:`release:${entry.releaseId}`,...entry})});
@@ -58,6 +63,7 @@ const uiClient=fs.readFileSync(path.join(publicDir,'ui-client.js'));
 function respond(res,code,data){res.writeHead(code,{'Content-Type':'application/json;charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
 async function body(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>8192)throw new Error('请求过长');}return JSON.parse(text||'{}');}
 const historyRoutes=createHistoryRoutes({config,accounts,history,qq,base,respond,body});
+const taskRoutes=createTaskRoutes({config,tasks,accounts,qq,base,respond});
 const server=http.createServer(async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
   if(req.headers.host!==`${host}:${port}`||(req.headers.origin&&req.headers.origin!==base)){respond(res,403,{error:'仅允许本机访问'});return;}
@@ -83,6 +89,7 @@ const server=http.createServer(async(req,res)=>{
       const input=await body(req),user=config.users.find(x=>x.id===input.user);if(!user)throw new Error('账号不存在');const x=await accounts.get(user);respond(res,200,{ok:true,current:await x.models.change(input.model,input.effort)});return;
     }
     if(req.method==='POST'&&req.url==='/api/commands/sync'){respond(res,200,await synchronizeCommands());return;}
+    if(await taskRoutes(req,res))return;
     if(await historyRoutes(req,res))return;
     if(req.method==='GET'&&req.url==='/api/status'){
       respond(res,200,{appId:config.appId,secretConfigured:Boolean(config.clientSecret),pairingCodes:config.pairingCodes.filter(p=>p.expires>Date.now()).map(p=>({label:p.label,command:`/pair ${p.pin}`})),sandbox:config.sandbox,qq:qq.state,codex:codexState,commands:commandsState,logs,users:accounts.status(),globalMemory:globalMemory.read(globalMemory.globalFile).map(x=>x.text).join('\n'),rotationTurns:config.rotationTurns,idleHours:config.idleHours,multimodal:'图片直接输入；语音 QQ ASR 或本地 whisper；视频抽样画面与音轨；文件读取与富媒体返回'});return;

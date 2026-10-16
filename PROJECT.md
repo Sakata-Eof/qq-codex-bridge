@@ -22,6 +22,7 @@
 | [src/core/models.mjs](src/core/models.mjs)、[src/core/memory.mjs](src/core/memory.mjs) | 模型偏好与全局、私有记忆 |
 | [src/qq/](src/qq/) | 网关投递、事件解析、指令菜单、按钮、Markdown、媒体来源校验 |
 | [src/history/](src/history/) | SQLite 历史、标题、导入、查询与导出 |
+| [src/history/task-store.mjs](src/history/task-store.mjs)、[src/core/task-stages.mjs](src/core/task-stages.mjs) | 新任务阶段、源消息及执行/投递状态 |
 | [src/media/processor.mjs](src/media/processor.mjs)、[scripts/media/](scripts/media/) | 附件处理、转写、语音与回传 |
 | [src/http/](src/http/)、[public/](public/) | 本机登录、历史 HTTP 路由与管理、历史页面 |
 | [src/shared/path-security.mjs](src/shared/path-security.mjs) | 账号与媒体共用的目录边界校验 |
