@@ -45,7 +45,8 @@ async function synchronizeCommands(){
   try{return await commandsFlight;}finally{commandsFlight=null;}
 }
 qq.on('ready',()=>{void synchronizeCommands().catch(()=>{});});
-qq.on('sent',({event,text,file,sequence,keyboard})=>history.record(event.user,{kind:'outbound',messageId:event.id,threadId:event.historyThreadId,text,sequence,file,buttons:keyboard?.content.rows.flatMap(row=>row.buttons.map(b=>b.render_data.label))}));
+qq.on('announcementSent',({format})=>log(`发布通知已使用 ${format==='markdown'?'Markdown':'纯文本'} 格式发送`));
+qq.on('sent',({event,text,file,sequence,keyboard,format,renderedText})=>history.record(event.user,{kind:'outbound',messageId:event.id,threadId:event.historyThreadId,text,sequence,file,format,renderedText,buttons:keyboard?.content.rows.flatMap(row=>row.buttons.map(b=>b.render_data.label))}));
 const globalMemory=new Memory(path.join(runtime,'global-memory.json'),path.join(runtime,'unused-private-memory.json'));
 let codexState='正在检查';
 async function checkCodex(){const rpc=new CodexRPC(config.codexBinary);try{await rpc.start();const r=await rpc.call('account/read',{refreshToken:false});codexState=r.account?'已登录；每个 QQ 账号独立启动 Codex 进程':'Codex 尚未登录';log(codexState);}catch(e){codexState=e.message;log(`Codex 检查失败：${e.message}`);}finally{rpc.stop();}}

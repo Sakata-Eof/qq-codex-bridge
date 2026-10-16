@@ -83,6 +83,10 @@ Codex 使用模型原生上下文压缩；桥接层默认在完成 40 轮或空�
 
 ## QQ 官方控件（2026-09-30 核实）
 
+普通回复默认发送 QQ 原生 Markdown，保留标题、粗体、列表、引用和网页链接；QQ 支持的语法范围以[官方文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)为准，复杂表格、公式等不保证完整渲染。本地文件链接显示为可读文本，实际文件仍由附件通道上传。长回复优先按段落和整行拆分，并保持 Unicode 字符及跨片代码围栏完整。
+
+只有平台明确拒绝 Markdown 格式时才对该片及后续片降级为纯文本；超时或结果不明确时不重发，已成功片段也不重放。本机配置 `replyFormat: "plain"` 可恢复纯文本。历史保留原始正文及实际发送格式，完整结果继续保存在本机。
+
 [官方 Markdown 文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html)说明，自 2026-04-23 起所有机器人可在单聊、群聊使用自定义 Markdown，无需单独申请模板；频道仍需内邀开通。
 
 [单聊消息接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html)支持 `keyboard.content.rows` 自定义按钮。当前桥接已使用指令按钮：审批提供“同意本次”和“拒绝”，询问提供选项按钮，同意、停止、新会话有二次确认。审批与回答按钮携带随机凭证，并校验账号、会话、活动轮次和未处理请求，过期或重复点击不会执行。文字 `/approve`、`/deny`、`/answer` 继续可用；客户端不支持或 QQ 明确拒绝按钮格式/权限时回退文字，网络超时不会盲目重复发送。

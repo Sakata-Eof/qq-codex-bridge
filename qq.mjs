@@ -8,6 +8,19 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { safeMediaURL } from './media.mjs';
 import { markdownText } from './controls.mjs';
+import { splitMarkdown } from './qq-markdown.mjs';
+
+const markdownRejected=err=>err.definite!==false&&!(Number(err.status)>=500)&&([22006,304061,40034011,40034029,40034127].includes(Number(err.code))||err.status===403);
+function splitPlain(value,limit=1300){
+  const parts=[];let text=String(value);
+  while(text){
+    let end=Math.min(limit,text.length);
+    if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;
+    if(end<text.length){const prefix=text.slice(0,end),paragraph=prefix.lastIndexOf('\n\n'),line=prefix.lastIndexOf('\n');if(paragraph>=0)end=paragraph+2;else if(line>=0)end=line+1;}
+    const source=text.slice(0,end);parts.push({text:source,markdown:source});text=text.slice(end);
+  }
+  return parts;
+}
 
 export class QQ extends EventEmitter {
   constructor(config, log) { super(); this.config=config; this.log=log; this.state='未配置'; this.seq=null; this.session=null; this.counts=new Map(); this.running=false; }
@@ -75,38 +88,67 @@ export class QQ extends EventEmitter {
       ws.once('close',(code)=>{clearTimeout(helloDeadline);clearInterval(this.heartbeat);if([4006,4007,4009,4900].includes(code)){this.session=null;this.seq=null;}if([4004,4013,4014].includes(code)){this.state=`QQ 拒绝接入 (${code})，请检查凭据与订阅权限`;this.log(this.state);}else this.state=`QQ 连接关闭 (${code})`;resolve();});
     });
   }
-  async send(e,text) {
-    const chunks=String(text).match(/[\s\S]{1,1500}/g)||[];
-    // QQ has reply limits; keep the full response locally and advertise /result if truncated.
-    const max=e.group?5:4, used=this.counts.get(e.id)||0;
-    const available=Math.max(0,max-used), parts=chunks.slice(0,available);
-    if(!parts.length)throw new Error('QQ 当前消息回复次数已用完');
-    if(chunks.length>parts.length) parts[parts.length-1]+='\n（结果较长，完整内容保存在本机配置页。）';
-    for(const content of parts) {
-      const n=(this.counts.get(e.id)||0)+1;this.counts.set(e.id,n);
-      // Do not retry message POST automatically after an ambiguous response.
-      await this.api(`/v2/${e.group?'groups':'users'}/${encodeURIComponent(e.chat)}/messages`,{content,msg_type:0,msg_id:e.id,msg_seq:n});
-      this.emit('sent',{event:e,text:content,sequence:n});
+  async send(e,text,options={}) {
+    let plain=options.format==='plain'||this.config.replyFormat==='plain';
+    const parts=plain?splitPlain(text):splitMarkdown(String(text),1300),max=(e.group?5:4)-(options.reserve||0);
+    const endpoint=`/v2/${e.group?'groups':'users'}/${encodeURIComponent(e.chat)}/messages`;
+    if(!parts.length||max<1||(this.counts.get(e.id)||0)>=max)throw new Error('QQ 当前消息回复次数已用完');
+    for(let i=0;i<parts.length;i++){
+      let accepted=false;
+      const post=async asPlain=>{
+        const sequence=(this.counts.get(e.id)||0)+1;if(sequence>max)throw new Error('QQ 当前消息回复次数已用完');
+        this.counts.set(e.id,sequence);
+        const truncated=sequence===max&&i<parts.length-1,notice=truncated?'\n（结果较长，完整内容保存在本机配置页。）':'';
+        const source=parts[i].text+notice,rendered=(asPlain?parts[i].text:parts[i].markdown)+notice;
+        // A timeout may mean the message arrived. Only a definite rejection permits fallback.
+        await this.api(endpoint,{...(asPlain?{msg_type:0,content:rendered}:{msg_type:2,markdown:{content:rendered}}),msg_id:e.id,msg_seq:sequence});
+        accepted=true;
+        this.emit('sent',{event:e,text:source,sequence,format:asPlain?'plain':'markdown',renderedText:rendered});
+        return truncated;
+      };
+      let truncated;
+      try{truncated=await post(plain);}
+      catch(err){
+        if(accepted||plain||!markdownRejected(err))throw err;
+        this.log(`原生 Markdown 被 QQ 拒绝，改用纯文本：${err.message}`);plain=true;
+        const remaining=parts.slice(i).map(part=>part.text).join('');parts.splice(i,parts.length-i,...splitPlain(remaining));
+        truncated=await post(true);
+      }
+      if(truncated)break;
     }
     if(this.counts.size>2000)this.counts.delete(this.counts.keys().next().value);
   }
+  async sendPlain(e,text,options={}) {return this.send(e,text,{...options,format:'plain'});}
   async sendAnnouncement(user,text) {
     if(typeof user?.id!=='string'||!user.id||typeof text!=='string'||!text.trim()||text.length>1400)throw Object.assign(new Error('主动通知需要接收账号及 1–1400 字的正文'),{definite:true});
-    return this.api(`/v2/users/${encodeURIComponent(user.id)}/messages`,{msg_type:0,content:text});
+    const endpoint=`/v2/users/${encodeURIComponent(user.id)}/messages`;
+    const parts=splitMarkdown(text,1500);
+    if(parts.length!==1)throw Object.assign(new Error('通知排版后超过单条消息上限'),{definite:true});
+    let accepted=false;
+    const post=async plain=>{
+      const result=await this.api(endpoint,plain?{msg_type:0,content:text}:{msg_type:2,markdown:{content:parts[0].markdown}});
+      accepted=true;
+      this.emit('announcementSent',{userId:user.id,text,format:plain?'plain':'markdown',renderedText:plain?text:parts[0].markdown});return result;
+    };
+    if(this.config.replyFormat==='plain')return post(true);
+    try{return await post(false);}
+    catch(err){if(accepted||!markdownRejected(err))throw err;this.log(`通知 Markdown 被 QQ 拒绝，改用纯文本：${err.message}`);return post(true);}
   }
   async sendButtons(e,text,rows){
     const max=e.group?5:4,n=(this.counts.get(e.id)||0)+1;if(n>max)throw new Error('QQ 当前消息回复次数已用完');
     const endpoint=`/v2/${e.group?'groups':'users'}/${encodeURIComponent(e.chat)}/messages`;
     const keyboard={content:{rows:rows.slice(0,5).map(buttons=>({buttons:buttons.slice(0,5)}))}};
     // Long details are delivered in full as text; the final card carries controls.
-    let summary=text;if(text.length>1200){await this.send(e,text);summary='请先阅读以上完整请求，再选择下方按钮。';}
+    let summary=text;if(text.length>1200){await this.send(e,text,{reserve:1});summary='请先阅读以上完整请求，再选择下方按钮。';}
     const sequence=(this.counts.get(e.id)||0)+1;if(sequence>max)throw new Error('回复次数不足，请使用文字审批指令');this.counts.set(e.id,sequence);
+    let accepted=false;
     try{
       await this.api(endpoint,{msg_type:2,markdown:{content:markdownText(summary)},keyboard,msg_id:e.id,msg_seq:sequence});
-      this.emit('sent',{event:e,text:summary,sequence,keyboard});
+      accepted=true;
+      this.emit('sent',{event:e,text:summary,sequence,keyboard,format:'markdown',renderedText:markdownText(summary)});
     }catch(err){
       // Only a definite format/permission rejection permits a text fallback.
-      if([22006,304061,40034011,40034029,40034127].includes(Number(err.code))||err.status===403){this.log(`原生按钮被 QQ 拒绝，改用文字：${err.message}`);await this.send(e,text);return;}
+      if(!accepted&&markdownRejected(err)){this.log(`原生按钮被 QQ 拒绝，改用文字：${err.message}`);await this.sendPlain(e,text.length>1200?'请阅读以上完整请求，并使用其中的文字指令提交选择。':text);return;}
       throw err;
     }
   }
