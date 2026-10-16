@@ -119,3 +119,7 @@ SQLite 使用 WAL 和账号／会话／时间索引。消息默认每页 30 条�
 搜索限定当前账号和会话，三字符及以上使用 FTS5 trigram 索引再核对精确子串；一至二字符在该会话范围内扫描。导出按 500 条一批写入文件，避免一次构造全部历史。`verification-history-performance.json` 记录 10 万条模拟数据的数据库测试，查询时间不包含网络、附件下载或浏览器渲染。
 
 按用户要求清理的旧记录备份在 `runtime/history-backups`。配置的 `historyResetBefore` 阻止清理前的 JSONL 和 Codex 日志再次补入；Codex 原始会话、工作文件和记忆不受影响。
+
+## 性能基准
+
+`npm run benchmark` 使用合成历史和文本比较优化前后的查询与分片耗时；方法、结果及适用范围见 [性能说明](docs/PERFORMANCE.md)。

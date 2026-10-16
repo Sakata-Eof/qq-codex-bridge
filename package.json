@@ -4,6 +4,15 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "scripts": {"start": "node server.mjs", "test": "node --test test.mjs ui-test.mjs bridge-input-test.mjs message-batches-test.mjs accounts-batching-test.mjs release-notifications-test.mjs qq-markdown-test.mjs qq-send-test.mjs", "probe": "node probe.mjs"},
-  "dependencies": {"ws": "^8.18.0", "undici": "^7.16.0", "https-proxy-agent": "^7.0.6"}
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test.mjs ui-test.mjs bridge-input-test.mjs message-batches-test.mjs accounts-batching-test.mjs release-notifications-test.mjs qq-markdown-test.mjs qq-send-test.mjs markdown-properties-test.mjs",
+    "probe": "node probe.mjs",
+    "benchmark": "node scripts/benchmarks/performance.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "undici": "^7.16.0",
+    "https-proxy-agent": "^7.0.6"
+  }
 }

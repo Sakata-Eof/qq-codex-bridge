@@ -85,11 +85,12 @@ export function splitMarkdown(value,limit=1400) {
   const units=unitsFor(text,limit),parts=[];let cursor=0,fence=null;
   while(cursor<units.length){
     const prefix=fence?.enabled?fence.opener:'';
-    let rendered='',lastValid=cursor,paragraph=cursor,line=cursor;
+    let renderedLength=0,lastChar='',lastValid=cursor,paragraph=cursor,line=cursor;
     for(let end=cursor;end<units.length;end++){
-      const unit=units[end],next=rendered+unit.markdown;
-      if(prefix.length+next.length+suffix(unit.fenceAfter,next).length>limit)break;
-      rendered=next;lastValid=end+1;
+      const unit=units[end],nextLength=renderedLength+unit.markdown.length,nextChar=unit.markdown?unit.markdown.at(-1):lastChar;
+      const suffixLength=unit.fenceAfter?.enabled?(nextChar==='\r'||nextChar==='\n'?0:1)+unit.fenceAfter.marker.length:0;
+      if(prefix.length+nextLength+suffixLength>limit)break;
+      renderedLength=nextLength;lastChar=nextChar;lastValid=end+1;
       if(unit.breakPriority===2)paragraph=lastValid;
       if(unit.breakPriority)line=lastValid;
     }

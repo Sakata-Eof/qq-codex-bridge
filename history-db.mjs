@@ -90,13 +90,14 @@ export class History {
   presentation(user,record){
     if(!record.messageId||!record.threadId||!record.text)return record;
     if(record.kind==='result'){
-      const sent=this.stmt("SELECT payload FROM messages WHERE user=? AND message_id=? AND thread_id=? AND kind='outbound' AND time>=? ORDER BY time,id").all(user,record.messageId,record.threadId,record.time).map(x=>JSON.parse(x.payload)).filter(x=>!x.file&&!x.buttons?.length);
+      // Look up this event first; a thread/time scan grows with the whole conversation.
+      const sent=this.stmt("SELECT payload FROM messages INDEXED BY messages_event WHERE user=? AND message_id=? AND thread_id=? AND kind='outbound' AND time>=? ORDER BY time,id").all(user,record.messageId,record.threadId,record.time).map(x=>JSON.parse(x.payload)).filter(x=>!x.file&&!x.buttons?.length);
       const exact=sent.find(x=>x.text===record.text);
       if(exact)return {...record,mergedInto:exact.recordId};
       const marker='\n（结果较长，完整内容保存在本机配置页。）';
       if(sent.some(x=>{const text=String(x.text||''),part=text.endsWith(marker)?text.slice(0,-marker.length):text;return part&&record.text.startsWith(part)&&part.length<record.text.length;}))return {...record,partialDelivery:true};
     }else if(record.kind==='outbound'&&!record.file&&!record.buttons?.length){
-      const result=this.stmt("SELECT payload FROM messages WHERE user=? AND message_id=? AND thread_id=? AND kind='result' AND text=? AND time<=? ORDER BY time DESC,id DESC LIMIT 1").get(user,record.messageId,record.threadId,record.text,record.time);
+      const result=this.stmt("SELECT payload FROM messages INDEXED BY messages_event WHERE user=? AND message_id=? AND thread_id=? AND kind='result' AND text=? AND time<=? ORDER BY time DESC,id DESC LIMIT 1").get(user,record.messageId,record.threadId,record.text,record.time);
       if(result){const r=JSON.parse(result.payload);return {...record,taskResult:{status:r.status,turnId:r.turnId,completedAt:r.time}};}
     }
     return record;
