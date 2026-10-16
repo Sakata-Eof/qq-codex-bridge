@@ -4,15 +4,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { Bridge, parseMessage, within } from './bridge.mjs';
-import { safeMediaURL, Media } from './media.mjs';
-import { Accounts } from './accounts.mjs';
-import { Memory } from './memory.mjs';
-import { History, UNASSIGNED } from './history.mjs';
-import { QQ } from './qq.mjs';
-import { Models } from './models.mjs';
-import { menu, requestButtons } from './controls.mjs';
-import { COMMANDS, PANEL_REMARK, syncCommands, syncQuickMenu } from './commands.mjs';
+import { Bridge } from '../src/core/bridge.mjs';
+import { parseMessage } from '../src/qq/events.mjs';
+import { within } from '../src/shared/path-security.mjs';
+import { Media } from '../src/media/processor.mjs';
+import { safeMediaURL } from '../src/qq/media-url.mjs';
+import { Accounts } from '../src/core/accounts.mjs';
+import { Memory } from '../src/core/memory.mjs';
+import { History, UNASSIGNED } from '../src/history/store.mjs';
+import { QQ } from '../src/qq/client.mjs';
+import { Models } from '../src/core/models.mjs';
+import { menu, requestButtons } from '../src/qq/controls.mjs';
+import { COMMANDS, PANEL_REMARK, syncCommands, syncQuickMenu } from '../src/qq/commands.mjs';
 class MockRPC extends EventEmitter {
   constructor(){super();this.calls=[];this.replies=[];this.count=0;}
   async call(method,params){this.calls.push({method,params});return method.startsWith('thread/')?{thread:{id:'thread-'+(++this.count)}}:method==='turn/start'?{turn:{id:'turn-'+this.count}}:method==='turn/steer'?{turnId:params.expectedTurnId}:{};}

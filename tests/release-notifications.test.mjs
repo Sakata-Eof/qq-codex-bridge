@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ReleaseNotifications } from './release-notifications.mjs';
+import { ReleaseNotifications } from '../src/ops/release-notifications.mjs';
 
 const release={id:'mobile-message-combining-v1',text:'已支持连续图片和文字合并处理。'};
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};

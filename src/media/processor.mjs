@@ -4,17 +4,10 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fetch } from 'undici';
-import { fileURLToPath } from 'node:url';
+import { scriptsDir } from '../paths.mjs';
+import { safeMediaURL } from '../qq/media-url.mjs';
+import { within } from '../shared/path-security.mjs';
 const run=promisify(execFile);
-export function safeMediaURL(value) {
-  const u=new URL(value.startsWith('//')?'https:'+value:value);
-  const hosts=['qq.com','qq.com.cn','qpic.cn','gtimg.cn','qlogo.cn','myqcloud.com','qqbot.cn','idqqimg.com'];
-  const trusted=u.hostname==='qqbot.ugcimg.cn'||hosts.some(h=>u.hostname===h||u.hostname.endsWith('.'+h));
-  if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.port||!trusted)throw new Error(`附件地址不在允许的腾讯媒体域名中 (${u.hostname})`);
-  // QQ supplies some legacy CDN URLs as HTTP; fetch the same trusted host over HTTPS.
-  u.protocol='https:';
-  return u.href;
-}
 export class Media {
   constructor(config,qq){this.config=config;this.qq=qq;}
   async download(url,target) {
@@ -31,7 +24,7 @@ export class Media {
     throw new Error('附件重定向次数过多');
   }
   async transcribe(file){
-    const {stdout}=await run(this.config.python,[path.join(path.dirname(fileURLToPath(import.meta.url)),'transcribe.py'),file,this.config.whisperModel],{windowsHide:true,timeout:600000,maxBuffer:1024*1024,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
+    const {stdout}=await run(this.config.python,[path.join(scriptsDir,'media','transcribe.py'),file,this.config.whisperModel],{windowsHide:true,timeout:600000,maxBuffer:1024*1024,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
     return JSON.parse(stdout).text;
   }
   async prepare(e,cwd){
@@ -93,9 +86,9 @@ export class Media {
     if(text.length>1000)throw new Error('语音文字最多 1000 字');
     const folder=path.join(cwd,'.qq-outgoing',crypto.randomBytes(8).toString('hex'));fs.mkdirSync(folder,{recursive:true});
     const source=path.join(folder,'text.txt'),wav=path.join(folder,'voice.wav');fs.writeFileSync(source,text,'utf8');
-    await run('powershell.exe',['-NoProfile','-File',path.join(this.config.bridgeDir,'speak.ps1'),'-TextFile',source,'-OutputFile',wav],{windowsHide:true,timeout:60000});
+    await run('powershell.exe',['-NoProfile','-File',path.join(scriptsDir,'media','speak.ps1'),'-TextFile',source,'-OutputFile',wav],{windowsHide:true,timeout:60000});
     const mp3=path.join(folder,'voice.mp3');await run(this.config.ffmpeg,['-v','error','-y','-i',wav,'-ac','1','-ar','24000',mp3],{windowsHide:true,timeout:30000});
     await this.sendFile(e,mp3);
   }
 }
-function withinMediaRoot(root,file){if(!fs.existsSync(root))return false;const relative=path.relative(fs.realpathSync(root),fs.realpathSync(file));return relative===''||(!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative));}
+function withinMediaRoot(root,file){return fs.existsSync(root)&&within(root,file);}

@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { Accounts } from './accounts.mjs';
-import { Bridge } from './bridge.mjs';
-import { History, UNASSIGNED } from './history.mjs';
-import { MessageBatches } from './message-batches.mjs';
+import { Accounts } from '../src/core/accounts.mjs';
+import { Bridge } from '../src/core/bridge.mjs';
+import { History, UNASSIGNED } from '../src/history/store.mjs';
+import { MessageBatches } from '../src/core/message-batches.mjs';
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const event=(id,text='',extra={})=>({id,text,user:'owner',chat:'owner',group:false,attachments:[],quoted:[],...extra});

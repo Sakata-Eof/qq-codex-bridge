@@ -2,13 +2,13 @@ import WebSocket from 'ws';
 import { fetch, ProxyAgent } from 'undici';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { EventEmitter } from 'node:events';
-import { parseMessage } from './bridge.mjs';
+import { parseMessage } from './events.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { safeMediaURL } from './media.mjs';
+import { safeMediaURL } from './media-url.mjs';
 import { markdownText } from './controls.mjs';
-import { splitMarkdown } from './qq-markdown.mjs';
+import { splitMarkdown } from './markdown.mjs';
 
 const markdownRejected=err=>err.definite!==false&&!(Number(err.status)>=500)&&([22006,304061,40034011,40034029,40034127].includes(Number(err.code))||err.status===403);
 function splitPlain(value,limit=1300){

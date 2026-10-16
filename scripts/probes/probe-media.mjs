@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { Media } from './media.mjs';
-import { CodexRPC } from './codex.mjs';
+import { runtimeDir, probeWorkspaceDir, verificationDir } from '../../src/paths.mjs';
+import { Media } from '../../src/media/processor.mjs';
+import { CodexRPC } from '../../src/core/codex.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-const run=promisify(execFile),dir=path.dirname(fileURLToPath(import.meta.url)),root=path.resolve(dir,'../../work/probe');
-const config=JSON.parse(fs.readFileSync(path.join(dir,'runtime/config.json'),'utf8')),media=new Media(config,{}),report=[];
+const run=promisify(execFile),root=probeWorkspaceDir;
+const config=JSON.parse(fs.readFileSync(path.join(runtimeDir,'config.json'),'utf8')),media=new Media(config,{}),report=[];
 media.download=async(url,target)=>{const f=url.includes('video')?'video.mp4':url.includes('image')?'vision.png':'speech.wav';fs.copyFileSync(path.join(root,f),target);return target;};
 const cwd=path.join(root,'media');fs.mkdirSync(cwd,{recursive:true});
 const event=(id,attachments,text='')=>({user:'probe',chat:'probe',group:false,id,text,attachments});
@@ -29,4 +29,4 @@ try{
   });
   report.push({test:'live Codex vision with isolated home',passed:answer.includes('5826'),reply:answer});
 }catch(e){report.push({test:'live Codex vision',passed:false,error:e.message});}
-finally{rpc.stop();fs.writeFileSync(path.join(dir,'verification-media.json'),JSON.stringify({time:new Date().toISOString(),scope:'Real local media and Codex; QQ download/upload is pending live verification',checks:report},null,2));console.log(JSON.stringify(report));}
+finally{rpc.stop();fs.mkdirSync(verificationDir,{recursive:true});fs.writeFileSync(path.join(verificationDir,'verification-media.json'),JSON.stringify({time:new Date().toISOString(),scope:'Real local media and Codex; QQ download/upload is pending live verification',checks:report},null,2));console.log(JSON.stringify(report));}

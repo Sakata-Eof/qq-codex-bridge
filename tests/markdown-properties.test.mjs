@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitMarkdown } from './qq-markdown.mjs';
+import { splitMarkdown } from '../src/qq/markdown.mjs';
 
 test('random Markdown fragments preserve exact source and stay within the wire limit', () => {
   let seed = 123456789;

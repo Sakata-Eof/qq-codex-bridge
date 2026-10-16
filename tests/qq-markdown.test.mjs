@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitMarkdown } from './qq-markdown.mjs';
+import { splitMarkdown } from '../src/qq/markdown.mjs';
 
 function valid(text,limit=1400) {
   const parts=splitMarkdown(text,limit);assert.equal(parts.map(part=>part.text).join(''),text);

@@ -1,5 +1,7 @@
 ﻿$ErrorActionPreference = 'Stop'
 $bridgeRoot = $PSScriptRoot
+$localLaunchers = Join-Path $bridgeRoot 'exports\launchers'
+New-Item -ItemType Directory -Path $localLaunchers -Force | Out-Null
 $programs = [Environment]::GetFolderPath('Programs')
 $shell = New-Object -ComObject WScript.Shell
 $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -16,6 +18,6 @@ foreach ($entry in @(
     $shortcut.IconLocation = (Join-Path $env:SystemRoot 'System32\shell32.dll') + ',14'
     $shortcut.WindowStyle = 7
     $shortcut.Save()
-    Copy-Item -LiteralPath $shortcutPath -Destination (Join-Path $bridgeRoot ($entry.Name + '.lnk')) -Force
+    Copy-Item -LiteralPath $shortcutPath -Destination (Join-Path $localLaunchers ($entry.Name + '.lnk')) -Force
     [pscustomobject]@{Name=$entry.Name; Installed=(Test-Path -LiteralPath $shortcutPath)}
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QQ } from './qq.mjs';
-import { menu } from './controls.mjs';
+import { QQ } from '../src/qq/client.mjs';
+import { menu } from '../src/qq/controls.mjs';
 
 const event=(extra={})=>({id:'source-message',user:'owner',chat:'owner',group:false,...extra});
 const messageBody=call=>call.body.msg_type===2?call.body.markdown.content:call.body.content;

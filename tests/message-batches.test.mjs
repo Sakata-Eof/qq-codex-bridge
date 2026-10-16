@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MessageBatches } from './message-batches.mjs';
+import { MessageBatches } from '../src/core/message-batches.mjs';
 
 const event=(id,text='',extra={})=>({id,text,user:'A',chat:'A',group:false,attachments:[],quoted:[],...extra});
 const image=id=>({content_type:'image/png',filename:`${id}.png`,url:`https://a.qpic.cn/${id}`});

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { History } from '../../history-db.mjs';
-import { splitMarkdown } from '../../qq-markdown.mjs';
+import { History } from '../../src/history/store.mjs';
+import { splitMarkdown } from '../../src/qq/markdown.mjs';
 
 // This benchmark uses only generated records in a temporary database, never runtime/.
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-codex-benchmark-'));
@@ -56,7 +56,7 @@ try {
 
   // Reconstruct the prior inner scan for a differential comparison of this optimization.
   // Fail explicitly if a later implementation no longer matches this baseline transform.
-  const source = fs.readFileSync(new URL('../../qq-markdown.mjs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+  const source = fs.readFileSync(new URL('../../src/qq/markdown.mjs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
   const current = `let renderedLength=0,lastChar='',lastValid=cursor,paragraph=cursor,line=cursor;
     for(let end=cursor;end<units.length;end++){
       const unit=units[end],nextLength=renderedLength+unit.markdown.length,nextChar=unit.markdown?unit.markdown.at(-1):lastChar;

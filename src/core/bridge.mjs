@@ -1,24 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { menu, requestButtons, button } from './controls.mjs';
-import { HELP, COMMAND_USAGE } from './commands.mjs';
-
-export function within(root, target) {
-  const r = path.relative(fs.realpathSync(root), fs.realpathSync(target));
-  return r === '' || (!r.startsWith('..' + path.sep) && r !== '..' && !path.isAbsolute(r));
-}
-export function parseMessage(type, d) {
-  if (!['C2C_MESSAGE_CREATE','GROUP_AT_MESSAGE_CREATE'].includes(type) || !d.id) return null;
-  const group = type === 'GROUP_AT_MESSAGE_CREATE';
-  const user = group ? d.author?.member_openid : d.author?.user_openid;
-  const chat = group ? d.group_openid : user;
-  if (!user || !chat) return null;
-  return { id: String(d.id), user: String(user), chat: String(chat), group,
-    attachments: Array.isArray(d.attachments)?d.attachments:[],
-    quoted: Array.isArray(d.msg_elements)?d.msg_elements.filter(x=>x.author?.user_openid===user || x.author?.member_openid===user):[],
-    text: String(d.content || '').replace(/<@!?\d+>/g, '').trim() };
-}
+import { menu, requestButtons, button } from '../qq/controls.mjs';
+import { HELP, COMMAND_USAGE } from '../qq/commands.mjs';
+import { within } from '../shared/path-security.mjs';
 
 export class Bridge {
   constructor(config, rpc, send, persist, stateFile, log = () => {}, media = null, memory = null) {

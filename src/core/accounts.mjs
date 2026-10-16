@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { CodexRPC } from './codex.mjs';
 import { Bridge } from './bridge.mjs';
-import { Media } from './media.mjs';
+import { Media } from '../media/processor.mjs';
 import { Memory } from './memory.mjs';
 import { Models } from './models.mjs';
 import { MessageBatches } from './message-batches.mjs';

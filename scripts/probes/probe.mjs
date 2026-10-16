@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { CodexRPC } from './codex.mjs';
-const dir=path.dirname(fileURLToPath(import.meta.url)),root=path.resolve(dir,'../../work/probe');fs.mkdirSync(root,{recursive:true});
+import { probeWorkspaceDir, verificationDir } from '../../src/paths.mjs';
+import { CodexRPC } from '../../src/core/codex.mjs';
+const root=probeWorkspaceDir;fs.mkdirSync(root,{recursive:true});
 async function turn(rpc,id,text,input=[]){
   return new Promise((resolve,reject)=>{
     let answer='',turnId;const timeout=setTimeout(()=>{cleanup();reject(new Error('Live turn timed out'));},180000);
@@ -25,4 +25,4 @@ try{
   const written=await turn(a.rpc,a.id,'请在当前目录创建 verification.txt，内容严格为 QQ_CODEX_FILE_OK，然后回复完成。');
   report.push({test:'live file execution',passed:fs.existsSync(path.join(a.cwd,'verification.txt'))&&fs.readFileSync(path.join(a.cwd,'verification.txt'),'utf8').trim()==='QQ_CODEX_FILE_OK',reply:written});
 }catch(e){report.push({test:'live probe',passed:false,error:e.message});}
-finally{a.rpc.stop();b.rpc.stop();fs.writeFileSync(path.join(dir,'verification.json'),JSON.stringify({time:new Date().toISOString(),scope:'Real local Codex, not real QQ delivery',checks:report},null,2));console.log(JSON.stringify(report));}
+finally{a.rpc.stop();b.rpc.stop();fs.mkdirSync(verificationDir,{recursive:true});fs.writeFileSync(path.join(verificationDir,'verification.json'),JSON.stringify({time:new Date().toISOString(),scope:'Real local Codex, not real QQ delivery',checks:report},null,2));console.log(JSON.stringify(report));}
