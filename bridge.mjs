@@ -25,7 +25,7 @@ export class Bridge {
     this.config = config; this.rpc = rpc; this.send = send; this.persist = persist; this.stateFile = stateFile; this.log = log;
     this.sessions = new Map(); this.seen = new Map(); this.questions = new Map(); this.serial = 1;
     this.media=media;this.memory=memory;
-    this.mediaTransfers=0;
+    this.mediaTransfers=0;this.inputTasks=0;
     if (fs.existsSync(stateFile)) {
       for (const [key, s] of Object.entries(JSON.parse(fs.readFileSync(stateFile, 'utf8')))) {
         if(!s.cwd || !fs.existsSync(s.cwd) || !config.allowedRoots.some(r=>within(r,s.cwd))) continue;
@@ -59,8 +59,9 @@ export class Bridge {
     // Persistent deduplication happens BEFORE any side effect, including /pair and turn/start.
     const now = Date.now();
     for (const [k,t] of this.seen) if (now-t > 86400000) this.seen.delete(k);
-    if (this.seen.has(e.id)) return;
-    this.seen.set(e.id, now);
+    const sources=e.sourceEvents||[e];
+    if(sources.every(source=>this.seen.has(source.id)))return;
+    for(const source of sources)this.seen.set(source.id,now);
     this.persistSeen?.(this.seen);
     if (!this.config.ownerOpenId) {
       if (e.group || !e.text.startsWith('/pair ')) return;
@@ -86,13 +87,16 @@ export class Bridge {
     if(text==='/media-test'&&this.media){try{await this.transfer(()=>this.media.smoke(e,s.cwd));await this.say(e,'已发送测试文件、图片和音频，请检查 QQ 中的下载、预览和播放。');}catch(err){this.log(`媒体测试失败：${err.message}`);await this.say(e,`媒体测试失败：${err.message}`);}return;}
     if (!text && !e.attachments?.length) return this.say(e,'请发送文字、图片、语音、视频或文件。/help 查看指令。');
     if (text === '/help') return this.say(e,HELP);
+    if((text==='/status'||text==='/context')&&this.pendingFor?.(e))return this.say(e,`正在合并连续消息（${this.pendingFor(e)} 条），短暂停顿后自动处理。\n当前任务：${s.status}\n会话：${s.threadId||'未创建'}\n/stop 可取消尚未提交的消息。`);
     if (text === '/status' || text === '/context') return this.say(e,`${s.status}\n模型：${this.models?.current().model||s.model||'Codex 默认'} · ${this.models?.current().effort||s.effort||'默认'}\n项目：${s.cwd}\n会话：${s.threadId || '未创建'}\n本会话已完成 ${s.turns||0} 轮，已压缩 ${s.compactions||0} 次\n最近上下文：${s.tokenUsage?.last?.inputTokens||'未知'} / ${s.tokenUsage?.modelContextWindow||'模型默认'} token\n空闲 ${this.config.idleHours||6} 小时或完成 ${this.config.rotationTurns||40} 轮后，下次任务自动换会话并携带近期摘要。\n待处理请求：${[...this.questions.entries()].filter(([,q])=>q.key===this.key(e)).map(([id])=>id).join(', ') || '无'}`);
     if(text==='/memory' && this.memory)return this.say(e,this.memory.display());
     if(text.startsWith('/remember ') && this.memory){try{const entry=this.memory.add(text.slice(10));return this.say(e,`已保存到你的独立记忆：${entry.id}`);}catch(err){return this.say(e,err.message);}}
     if(text.startsWith('/forget ') && this.memory){try{this.memory.remove(text.slice(8).trim());return this.say(e,'已删除这条账号记忆。');}catch(err){return this.say(e,err.message);}}
     if (text === '/result') return this.say(e,s.last || '尚无结果。');
     if (text === '/stop') {
-      if (!s.active || !s.turnId) return this.say(e,'当前没有可停止的任务；正在启动时请稍后重试。');
+      const cancelled=this.cancelBuffered(e,s,'stop');
+      const queued=cancelled.length+(s.queuedInputs||0);
+      if (!s.active || !s.turnId) return this.say(e,s.active?'已取消尚未提交的消息；当前任务正在启动，需稍后 /stop 确认停止。':queued?'已取消尚未提交的消息。':'当前没有可停止的任务；正在启动时请稍后重试。');
       await this.rpc.call('turn/interrupt',{threadId:s.threadId, turnId:s.turnId});
       return this.say(e,'已请求停止，等待 Codex 确认。');
     }
@@ -105,7 +109,7 @@ export class Bridge {
     }
     if (text.startsWith('/voice ') && this.media) {try{await this.transfer(()=>this.media.voice(e,text.slice(7),s.cwd));}catch(err){await this.say(e,`语音发送失败：${err.message}`);}return;}
     if (text === '/new' || text.startsWith('/project ')) {
-      if (s.active || s.busy) return this.say(e,'任务仍在执行，请先 /stop。');
+      if (s.active || s.busy || s.queuedInputs || this.pendingFor?.(e)) return this.say(e,'任务或待处理消息仍在执行，请先 /stop。');
       if (text.startsWith('/project ')) {
         const target = text.slice(9).trim().replace(/^"|"$/g,'');
         if (!path.isAbsolute(target) || !fs.existsSync(target) || !fs.statSync(target).isDirectory() || !this.config.allowedRoots.some(r=>within(r,target))) return this.say(e,'目录不存在或不在本地配置允许的项目根目录中。');
@@ -115,12 +119,70 @@ export class Bridge {
       return this.say(e,`已创建新的会话入口。项目：${s.cwd}`);
     }
     if (text.startsWith('/') && !text.startsWith('/codex ')) return this.say(e,'未知指令，请发送 /help。');
+    return this.enqueueInput(e,s);
+  }
+  async enqueueInput(e,s) {
+    const epoch=s.inputEpoch||0;
+    this.inputTasks++;s.queuedInputs=(s.queuedInputs||0)+1;
+    const task=(s.inputChain||Promise.resolve()).then(()=>{
+      if(epoch!==(s.inputEpoch||0)){
+        if(s.inputCancellationReason==='prepare')return this.say(e,'前一条消息准备失败，这条后续消息未提交。请检查附件后重新发送。');
+        return;
+      }
+      return this.submitInput(e,s,epoch);
+    });
+    s.inputChain=task.catch(()=>{});
+    try{return await task;}finally{this.inputTasks--;s.queuedInputs--;}
+  }
+  cancelBuffered(e,s,reason) {
+    const cancelled=this.cancelPending?.(e)||[];
+    for(const source of cancelled)this.seen.set(source.id,Date.now());
+    if(cancelled.length)this.persistSeen?.(this.seen);
+    s.inputEpoch=(s.inputEpoch||0)+1;s.inputCancellationReason=reason;
+    return cancelled;
+  }
+  async submitInput(e,s,epoch) {
+    if(this.models?.changing)return this.say(e,'模型正在切换，消息未提交，请稍后再发。');
     if(s.deliveryPromise)await s.deliveryPromise;
-    if (s.busy || s.active || s.delivering || this.models?.changing) return this.say(e,'已有任务或模型切换正在执行，未提交新任务。可以 /status、/stop，或处理审批。');
-    s.event=e;s.busy = true; s.status = '正在启动'; this.save();
+    if(epoch!==(s.inputEpoch||0))return;
+    if(s.active&&!s.turnId)return this.say(e,'上一任务状态尚未确认，这条补充未提交。请先 /status 核对，勿重复提交任务。');
+    s.busy=true;s.status=s.active?'正在接收补充':'正在启动';this.save();
     try {
-      const input=this.media?await this.media.prepare(e,s.cwd):[{type:'text',text:text.replace(/^\/codex\s+/,'')}];
+      const input=this.media?await this.media.prepare(e,s.cwd):[{type:'text',text:e.text.replace(/^\/codex\s+/,'')}];
       await this.models?.validateInput(input);
+      if(epoch!==(s.inputEpoch||0))return;
+      if(s.deliveryPromise)await s.deliveryPromise;
+      if(epoch!==(s.inputEpoch||0))return;
+      if(s.active)await this.steerInput(e,s,input,epoch);
+      else await this.startInput(e,s,input,epoch);
+    }catch(err){
+      if(epoch!==(s.inputEpoch||0))return;
+      let text=`${s.active?'补充接收失败':'启动异常'}：${err.message}`;
+      if(!s.active){const cancelled=this.cancelBuffered(e,s,'prepare');if(cancelled.length)text+=`；同时取消 ${cancelled.length} 条后续消息，均未提交。`;s.status=text;s.last=text;s.loaded=false;}
+      await this.say(e,text);
+    }finally{s.busy=false;this.save();}
+  }
+  async steerInput(e,s,input,epoch=s.inputEpoch||0) {
+    const threadId=s.threadId,turnId=s.turnId;
+    try{
+      await this.rpc.call('turn/steer',{threadId,expectedTurnId:turnId,input});
+      e.historyThreadId=threadId;this.onSession?.(e,{...s,threadId});
+      s.currentPrompt=[s.currentPrompt,e.text].filter(Boolean).join('\n补充：').slice(0,1600);
+      if(s.active&&s.turnId===turnId)s.status='执行中（已接收补充）';
+    }catch(err){
+      if(epoch!==(s.inputEpoch||0))return;
+      // Only a definite rejection plus a confirmed completion permits a new turn.
+      if(err.definite&&!s.active&&s.threadId===threadId&&epoch===(s.inputEpoch||0)){
+        if(s.deliveryPromise)await s.deliveryPromise;
+        return this.startInput(e,s,input,epoch);
+      }
+      await this.say(e,`补充${err.definite?'未被接收':'提交状态待核实'}：${err.message}。请先 /status 核对，未重复提交。`);
+    }
+  }
+  async startInput(e,s,input,epoch=s.inputEpoch||0) {
+    if(epoch!==(s.inputEpoch||0))return;
+    const text=e.text;s.event=e;let turnRequested=false;
+    try{
       const idleExpired=s.lastAt&&Date.now()-s.lastAt>(this.config.idleHours||6)*3600000;
       if(s.threadId&&((s.turns||0)>=(this.config.rotationTurns||40)||idleExpired)){
         s.handoff=(s.recent||[]).map(x=>`近期任务：${x.prompt}\n结果：${x.result}`).join('\n').slice(-4000);
@@ -140,19 +202,23 @@ export class Bridge {
       }
       e.historyThreadId=s.threadId;
       this.onSession?.(e,s);
+      if(epoch!==(s.inputEpoch||0))return;
       // Register active before turn/start: notifications can arrive before its response.
-      s.active = true; s.status = '执行中'; s.final = '';s.generated=[]; this.save();
+      s.active = true; s.turnId=undefined; s.status = '执行中'; s.final = '';s.generated=[]; this.save();
       const selection=this.models?.params()||{};
+      turnRequested=true;
       const r = await this.rpc.call('turn/start',{threadId:s.threadId,input,...selection});
       s.model=selection.model||s.model;s.effort=selection.effort||s.effort;
       if (s.active) s.turnId = r.turn.id;
     } catch(e2) {
+      if(epoch!==(s.inputEpoch||0)){if(e2.definite&&s.event===e){s.active=false;s.loaded=false;}return;}
       // Never retry turn/start automatically: a lost response can still mean it started.
       if(e2.definite) s.active=false;
-      s.status = `启动异常：${e2.message}`; s.last = s.status;
+      const cancelled=!s.active&&(!turnRequested||e2.definite)?this.cancelBuffered(e,s,'prepare'):[];
+      s.status = `启动异常：${e2.message}${cancelled.length?`；同时取消 ${cancelled.length} 条后续消息，均未提交。`:''}`; s.last = s.status;
       if (!s.active) s.loaded = false;
       await this.say(e,s.status);
-    } finally { s.busy = false; this.save(); }
+    }
   }
   notification(m) {
     const p = m.params || {};

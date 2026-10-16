@@ -5,7 +5,7 @@ export const COMMANDS=[
 ];
 const HIDDEN_COMMANDS=new Set(['/file','/voice','/media-test','/forget','/approve','/deny','/answer']);
 export const PUBLIC_COMMANDS=COMMANDS.filter(([name])=>!HIDDEN_COMMANDS.has(name));
-export const HELP='直接在 QQ 发送文字、图片、语音、视频或文件即可调用本机 Codex。需要回传时可以说“把生成的文件发给我”或“用语音回复”。\n'+PUBLIC_COMMANDS.map(([name,desc])=>`${name} ${desc}`).join('\n')+'\n审批或询问出现时点击相应按钮。每个账号使用独立的会话、审批和工作目录。';
+export const HELP='直接在 QQ 发送文字、图片、语音、视频或文件即可调用本机 Codex。连续消息会在停顿约 3 秒后合并处理，单张图片也会自动开始；先发文字或先发附件都可以。执行中再发内容会作为当前任务的补充。/stop 可停止任务并取消尚未提交的消息。需要回传时可以说“把生成的文件发给我”或“用语音回复”。\n'+PUBLIC_COMMANDS.map(([name,desc])=>`${name} ${desc}`).join('\n')+'\n审批或询问出现时点击相应按钮。每个账号使用独立的会话、审批和工作目录。';
 export const COMMAND_USAGE={
   '/file':'请在指令后填写你项目内文件的绝对路径：\n/file C:\\你的项目\\文件名.png\n也可以直接告诉 Codex“把刚生成的文件发给我”。',
   '/send':'请在 /send 后填写你项目内文件的绝对路径；它与 /file 用法相同。',

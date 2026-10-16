@@ -15,7 +15,7 @@ import { menu, requestButtons } from './controls.mjs';
 import { COMMANDS, PANEL_REMARK, syncCommands, syncQuickMenu } from './commands.mjs';
 class MockRPC extends EventEmitter {
   constructor(){super();this.calls=[];this.replies=[];this.count=0;}
-  async call(method,params){this.calls.push({method,params});return method.startsWith('thread/')?{thread:{id:'thread-'+(++this.count)}}:method==='turn/start'?{turn:{id:'turn-'+this.count}}:{};}
+  async call(method,params){this.calls.push({method,params});return method.startsWith('thread/')?{thread:{id:'thread-'+(++this.count)}}:method==='turn/start'?{turn:{id:'turn-'+this.count}}:method==='turn/steer'?{turnId:params.expectedTurnId}:{};}
   reply(id,result){this.replies.push({id,result});}write(m){this.replies.push(m);}
 }
 function fixture(owner='A'){
@@ -50,7 +50,22 @@ test('separate users: same RPC request id and approval number never cross',async
   assert(a.sent.some(x=>x.text==='ONLY_A'&&x.user==='A'));assert(!b.sent.some(x=>x.text.includes('ONLY_A')));
 });
 test('same message delivered twice only starts one task',async()=>{const f=fixture();await Promise.all([f.bridge.handle(f.event('执行','same')),f.bridge.handle(f.event('执行','same'))]);assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,1);});
-test('busy task rejects second prompt but permits status and stop',async()=>{const f=fixture();await f.bridge.handle(f.event('执行'));await f.bridge.handle(f.event('另一个'));await f.bridge.handle(f.event('/status'));await f.bridge.handle(f.event('/stop'));assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,1);assert(f.rpc.calls.some(x=>x.method==='turn/interrupt'));});
+test('active task accepts additional input while status and stop remain available',async()=>{const f=fixture();await f.bridge.handle(f.event('执行'));await f.bridge.handle(f.event('另一个'));await f.bridge.handle(f.event('/status'));await f.bridge.handle(f.event('/stop'));assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,1);assert.equal(f.rpc.calls.filter(x=>x.method==='turn/steer').length,1);assert(f.rpc.calls.some(x=>x.method==='turn/interrupt'));});
+test('failed task stays associated with its original message after supplements and status commands',async()=>{
+  const f=fixture(),original=f.event('看图','original'),results=[],delivered=[];
+  f.bridge.onResult=(e,result)=>results.push({messageId:e.id,...result});
+  f.bridge.send=async(e,text)=>delivered.push({messageId:e.id,text});
+  await f.bridge.handle(original);
+  await f.bridge.handle(f.event('在图片上','supplement'));
+  await f.bridge.handle(f.event('/status','status'));
+  f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'failed',error:{message:'workspace routing discovery failed'}}}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(results.map(x=>[x.messageId,x.status,x.text]),[['original','failed','workspace routing discovery failed']]);
+  assert.deepEqual(delivered.filter(x=>x.text==='workspace routing discovery failed'),[{messageId:'original',text:'workspace routing discovery failed'}]);
+  const s=f.bridge.sessions.get(f.bridge.key(original));assert.equal(s.active,false);assert.equal(s.busy,false);assert.equal(s.delivering,false);
+  await f.bridge.handle(f.event('下一轮','next'));
+  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,2);
+});
 test('group approval cannot resolve private conversation',async()=>{const f=fixture();f.config.allowedGroups=['group'];await f.bridge.handle(f.event('执行'));f.rpc.emit('request',{id:2,method:'item/fileChange/requestApproval',params:{threadId:'thread-1'}});await f.bridge.handle({...f.event('/approve 1'),group:true,chat:'group'});assert.equal(f.rpc.replies.length,0);});
 test('unauthorized account is silent and allocates no session',async()=>{const f=fixture();await f.bridge.handle({...f.event('执行'),user:'stranger'});assert.equal(f.rpc.calls.length,0);assert.equal(f.bridge.sessions.size,0);assert.equal(f.sent.length,0);});
 test('restart retains each session but discards outstanding approvals',async()=>{const f=fixture();await f.bridge.handle(f.event('执行'));const fresh=new Bridge(f.config,new MockRPC(),async()=>{},()=>{},path.join(f.root,'sessions.json'));assert.equal([...fresh.sessions.values()][0].threadId,'thread-1');assert.equal(fresh.questions.size,0);assert.match([...fresh.sessions.values()][0].status,/待核实/);});
@@ -78,6 +93,27 @@ test('completed model turn remains busy until its QQ result delivery finishes',a
   const a=new Accounts({users:[]},{},f.root,()=>{},()=>{});a.instances.set('A',{bridge:f.bridge});
   f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'completed'}}});
   assert.equal(a.busy(),true);finish();await new Promise(resolve=>setImmediate(resolve));assert.equal(a.busy(),false);
+});
+test('completed result delivery retains its text and files when the session is reset before delivery resumes',async()=>{
+  const f=fixture(),original=f.event('生成文件','original'),sent=[],files=[];
+  await f.bridge.handle(original);
+  const file=path.join(f.root,'result.txt');fs.writeFileSync(file,'completed file');
+  f.bridge.media={prepare:async e=>[{type:'text',text:e.text}],sendFile:async(e,file)=>files.push({messageId:e.id,file})};
+  f.bridge.send=async(e,text)=>sent.push({messageId:e.id,text});
+  const deliver=f.bridge.deliver.bind(f.bridge);let resume;
+  const paused=new Promise(resolve=>{resume=resolve;});f.bridge.deliver=async completed=>{await paused;await deliver(completed);};
+  const final=`已生成 [文件](${file})`;
+  f.rpc.emit('notification',{method:'item/completed',params:{threadId:'thread-1',item:{type:'agentMessage',phase:'final_answer',text:final}}});
+  f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'completed'}}});
+  await f.bridge.handle(f.event('/new','reset'));
+  const next=f.bridge.handle(f.event('新任务','next'));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,1);
+  resume();await next;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,2);
+  assert.deepEqual(sent.filter(x=>x.text===final),[{messageId:'original',text:final}]);
+  assert.deepEqual(files,[{messageId:'original',file}]);
+  assert.equal(f.bridge.sessions.get(f.bridge.key(original)).delivering,false);
 });
 test('native approval tokens reject foreign users, stale turns and duplicate clicks',async()=>{
   const f=fixture();await f.bridge.handle(f.event('执行'));
@@ -158,42 +194,4 @@ test('equal task results merge with their delivery even across page boundaries w
 test('failed, partial, file and foreign account or session deliveries never hide a task result',()=>{
   const {h}=historyFixture();const result={kind:'result',messageId:'m',threadId:'one',recordId:'result',time:'2026-10-08T00:00:01Z',text:'完整任务结果XYZ',status:'completed'};h.record('A',result);for(const [user,extra] of [['B',{}],['A',{threadId:'two'}],['A',{file:'own.txt'}],['A',{buttons:['确认']}],['A',{time:'2026-10-08T00:00:00Z'}]])h.record(user,{...result,kind:'outbound',recordId:Math.random().toString(),time:'2026-10-08T00:00:02Z',...extra});assert.equal(h.page('A',{thread:'one'}).records.find(x=>x.kind==='result').mergedInto,undefined);
   h.record('A',{kind:'outbound',messageId:'m',threadId:'one',time:'2026-10-08T00:00:03Z',text:'完整任务\n（结果较长，完整内容保存在本机配置页。）'});const partial=h.page('A',{thread:'one'}).records.find(x=>x.kind==='result');assert.equal(partial.partialDelivery,true);assert.equal(partial.mergedInto,undefined);assert.equal(partial.text,result.text);h.record('A',{kind:'error',messageId:'fail',threadId:'one',text:'执行失败'});h.record('A',{kind:'outbound',messageId:'fail',threadId:'one',text:'执行失败'});assert.equal(h.page('A',{thread:'one'}).records.find(x=>x.kind==='error').mergedInto,undefined);h.close();
-});
-
-test('failed task stays associated with its original message after supplements and status commands',async()=>{
-  const f=fixture(),original=f.event('看图','original'),results=[],delivered=[];
-  f.bridge.onResult=(e,result)=>results.push({messageId:e.id,...result});
-  f.bridge.send=async(e,text)=>delivered.push({messageId:e.id,text});
-  await f.bridge.handle(original);
-  await f.bridge.handle(f.event('在图片上','supplement'));
-  await f.bridge.handle(f.event('/status','status'));
-  f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'failed',error:{message:'workspace routing discovery failed'}}}});
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(results.map(x=>[x.messageId,x.status,x.text]),[['original','failed','workspace routing discovery failed']]);
-  assert.deepEqual(delivered.filter(x=>x.text==='workspace routing discovery failed'),[{messageId:'original',text:'workspace routing discovery failed'}]);
-  const s=f.bridge.sessions.get(f.bridge.key(original));assert.equal(s.active,false);assert.equal(s.busy,false);assert.equal(s.delivering,false);
-  await f.bridge.handle(f.event('下一轮','next'));
-  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,2);
-});
-
-test('completed result delivery retains its text and files when the session is reset before delivery resumes',async()=>{
-  const f=fixture(),original=f.event('生成文件','original'),sent=[],files=[];
-  await f.bridge.handle(original);
-  const file=path.join(f.root,'result.txt');fs.writeFileSync(file,'completed file');
-  f.bridge.media={prepare:async e=>[{type:'text',text:e.text}],sendFile:async(e,file)=>files.push({messageId:e.id,file})};
-  f.bridge.send=async(e,text)=>sent.push({messageId:e.id,text});
-  const deliver=f.bridge.deliver.bind(f.bridge);let resume;
-  const paused=new Promise(resolve=>{resume=resolve;});f.bridge.deliver=async completed=>{await paused;await deliver(completed);};
-  const final=`已生成 [文件](${file})`;
-  f.rpc.emit('notification',{method:'item/completed',params:{threadId:'thread-1',item:{type:'agentMessage',phase:'final_answer',text:final}}});
-  f.rpc.emit('notification',{method:'turn/completed',params:{threadId:'thread-1',turn:{status:'completed'}}});
-  await f.bridge.handle(f.event('/new','reset'));
-  const next=f.bridge.handle(f.event('新任务','next'));
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,1);
-  resume();await next;await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(f.rpc.calls.filter(x=>x.method==='turn/start').length,2);
-  assert.deepEqual(sent.filter(x=>x.text===final),[{messageId:'original',text:final}]);
-  assert.deepEqual(files,[{messageId:'original',file}]);
-  assert.equal(f.bridge.sessions.get(f.bridge.key(original)).delivering,false);
 });

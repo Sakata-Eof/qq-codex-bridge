@@ -4,6 +4,6 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "scripts": {"start": "node server.mjs", "test": "node --test test.mjs ui-test.mjs", "probe": "node probe.mjs"},
+  "scripts": {"start": "node server.mjs", "test": "node --test test.mjs ui-test.mjs bridge-input-test.mjs message-batches-test.mjs accounts-batching-test.mjs", "probe": "node probe.mjs"},
   "dependencies": {"ws": "^8.18.0", "undici": "^7.16.0", "https-proxy-agent": "^7.0.6"}
 }

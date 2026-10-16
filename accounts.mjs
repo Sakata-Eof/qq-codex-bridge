@@ -7,6 +7,7 @@ import { Bridge } from './bridge.mjs';
 import { Media } from './media.mjs';
 import { Memory } from './memory.mjs';
 import { Models } from './models.mjs';
+import { MessageBatches } from './message-batches.mjs';
 export class Accounts {
   constructor(config,qq,runtime,persist,log,history=null){this.config=config;this.qq=qq;this.runtime=runtime;this.persist=persist;this.log=log;this.history=history;this.instances=new Map();this.starting=new Map();}
   userKey(id){return crypto.createHash('sha256').update(this.config.appId+':'+id).digest('hex').slice(0,24);}
@@ -29,13 +30,20 @@ export class Accounts {
       this.history?.importCodex(user.id);
       const media=new Media(this.config,this.qq);media.onMedia=(e,files,text)=>this.history?.record(user.id,{kind:'assets',messageId:e.id,threadId:e.historyThreadId,files,text});
       const bridge=new Bridge(userConfig,rpc,(e,text,buttons)=>buttons?.length?this.qq.sendButtons(e,text,buttons):this.qq.send(e,text),this.persist,path.join(stateDir,'sessions.json'),this.log,media,new Memory(path.join(this.runtime,'global-memory.json'),path.join(stateDir,'private-memory.json')));
+      const batches=new MessageBatches({delayMs:this.config.messageMergeMs??3000,maxWaitMs:10000,handle:e=>bridge.handle(e),onError:async(e,err)=>{
+        this.log(`消息处理失败：${err.message}`);
+        this.history?.record(user.id,{kind:'error',messageId:e.id,threadId:e.historyThreadId,text:err.message});
+        await bridge.say(e,`消息处理失败：${err.message}`);
+      }});
+      bridge.pendingFor=e=>batches.pendingFor(e);bridge.cancelPending=e=>batches.cancel(e);
+      rpc.on('offline',()=>batches.cancelAll());
       bridge.onResult=(e,result)=>this.history?.record(user.id,{kind:result.status==='failed'?'error':'result',messageId:e.id,...result});
-      const models=new Models(rpc,user,this.persist,()=>bridge.mediaTransfers>0||[...bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));
+      const models=new Models(rpc,user,this.persist,()=>batches.busy()||bridge.inputTasks>0||bridge.mediaTransfers>0||[...bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));
       try{await models.init();}catch(err){rpc.stop();throw err;}bridge.models=models;
-      bridge.onSession=(e,s)=>this.history?.bindMessage(user.id,e.id,s.threadId,e.text.replace(/^\/codex\s+/,'')||e.attachments?.[0]?.filename||'多模态对话');
+      bridge.onSession=(e,s)=>{for(const source of e.sourceEvents||[e]){source.historyThreadId=s.threadId;this.history?.bindMessage(user.id,source.id,s.threadId,e.text.replace(/^\/codex\s+/,'')||e.attachments?.[0]?.filename||'多模态对话');}};
       const seenFile=path.join(stateDir,'seen.json');if(fs.existsSync(seenFile))bridge.seen=new Map(JSON.parse(fs.readFileSync(seenFile,'utf8')));
       bridge.persistSeen=seen=>{fs.writeFileSync(seenFile+'.tmp',JSON.stringify([...seen]),{mode:0o600});fs.renameSync(seenFile+'.tmp',seenFile);};
-      const instance={rpc,bridge,user,models};this.instances.set(user.id,instance);return instance;
+      const instance={rpc,bridge,user,models,batches};this.instances.set(user.id,instance);return instance;
     })();
     this.starting.set(user.id,promise);try{return await promise;}finally{this.starting.delete(user.id);}
   }
@@ -52,11 +60,13 @@ export class Accounts {
     }
     if(e.group&&!(user.allowedGroups||[]).includes(e.chat))return;
     if(this.history&&!this.history.hasInbound(user.id,e.id))this.history.record(user.id,{kind:'inbound',messageId:e.id,text:e.text,chat:e.chat,group:e.group,attachments:(e.attachments||[]).map(a=>({filename:a.filename||'',type:a.content_type||'',size:a.size||0,host:a.url?new URL(a.url.startsWith('//')?'https:'+a.url:a.url).hostname:''}))});
-    const {bridge}=await this.get(user);e.historyThreadId=bridge.sessions.get(bridge.key(e))?.threadId;
+    const {bridge,batches}=await this.get(user);e.historyThreadId=bridge.sessions.get(bridge.key(e))?.threadId;
     if(e.historyThreadId)this.history?.bindMessage(user.id,e.id,e.historyThreadId);
-    await bridge.handle(e);
+    if(bridge.seen.has(e.id))return;
+    if(batches&&(!e.text.startsWith('/')||e.text.startsWith('/codex ')))await batches.push(e);
+    else await bridge.handle(e);
   }
-  busy(){return this.starting.size>0||[...this.instances.values()].some(x=>x.models?.changing||x.bridge.mediaTransfers>0||[...x.bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));}
+  busy(){return this.starting.size>0||[...this.instances.values()].some(x=>x.batches?.busy()||x.models?.changing||x.bridge.inputTasks>0||x.bridge.mediaTransfers>0||[...x.bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));}
   status(){return this.config.users.map(user=>{const instance=this.instances.get(user.id);return {id:user.id,label:user.label,workspace:user.workspace,model:instance?.models.current()||{model:user.model||null,effort:user.reasoningEffort||null,inherited:!user.model},process:instance?.rpc.child?.pid||null,sessions:instance?[...instance.bridge.sessions.values()].map(s=>({cwd:s.cwd,threadId:s.threadId,status:s.status,last:s.last,model:s.model,effort:s.effort})):[]};});}
-  stop(){for(const x of this.instances.values())x.rpc.stop();}
+  stop(){for(const x of this.instances.values()){x.batches?.cancelAll();x.rpc.stop();}}
 }
