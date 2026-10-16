@@ -1,9 +1,32 @@
 const $=id=>document.getElementById(id);
 let user='',thread='',sessions=[],sessionNext=null,pageStack=[''],next=null,watermark=0,generation=0,request=null,polling=false,searchTimer,assets=new Map(),sessionSignature='';
 const api=(url,body,signal)=>qqUI.request(url,body,signal,body?60000:10000);
-let pageFailed=false,hasPage=false;
+let pageFailed=false,hasPage=false,pageLoading=false,accountLoading=false,sessionsLoading=false,sessionsRequest=0,exporting=false,controlsBusy=false,lastNavigationUnlock=-Infinity;
+const viewLoading=()=>pageLoading||accountLoading;
+function navigationBlocked(event){return viewLoading()||Boolean(event&&Number.isFinite(event.timeStamp)&&event.timeStamp<=lastNavigationUnlock);}
+function afterPaint(){
+  if(document.hidden||typeof requestAnimationFrame!=='function')return Promise.resolve();
+  return new Promise(resolve=>{
+    let frame,timer,finished=false;
+    const finish=()=>{if(finished)return;finished=true;clearTimeout(timer);if(typeof cancelAnimationFrame==='function')cancelAnimationFrame(frame);document.removeEventListener('visibilitychange',onVisibility);resolve();};
+    const onVisibility=()=>{if(document.hidden)finish();};
+    document.addEventListener('visibilitychange',onVisibility);timer=setTimeout(finish,100);frame=requestAnimationFrame(()=>{frame=requestAnimationFrame(finish);});
+  });
+}
+function syncControls(){
+  const busy=viewLoading();
+  if(controlsBusy&&!busy)lastNavigationUnlock=globalThis.performance?.now()??Date.now();controlsBusy=busy;
+  for(const id of ['users','sessions']){const container=$(id);container.inert=busy;container.setAttribute('aria-busy',String(busy));for(const button of container.children)button.disabled=busy;}
+  $('moreSessions').disabled=busy||sessionsLoading;
+  for(const id of ['search','pageSize','latest','newMessages','rename'])$(id).disabled=busy||!thread;
+  $('export').disabled=busy||!thread||exporting;
+  $('newer').disabled=busy||!hasPage||pageFailed||pageStack.length===1;
+  $('older').disabled=busy||!hasPage||pageFailed||!next;
+  $('loading').hidden=!busy;$('messages').setAttribute('aria-busy',String(busy));
+}
+function resetPage(message){hasPage=false;pageFailed=false;pageStack=[''];next=null;watermark=0;$('messages').replaceChildren();$('empty').hidden=false;$('empty').textContent=message;$('pageInfo').textContent='正在读取消息数量…';}
 function disposeAssets(){for(const asset of assets.values()){asset.controller.abort();if(asset.url)URL.revokeObjectURL(asset.url);}assets.clear();}
-function invalidate(){generation++;request?.abort();disposeAssets();$('newMessages').hidden=true;return generation;}
+function invalidate(){generation++;clearTimeout(searchTimer);request?.abort();disposeAssets();$('newMessages').hidden=true;return generation;}
 function error(e){if(e.name!=='AbortError'){$('state').textContent=e.auth?'页面未登录，无法读取历史':`读取失败，稍后会重试：${e.message}`;if(!hasPage){$('empty').hidden=false;$('empty').textContent=e.auth?'请先从本机启动脚本验证登录':'消息尚未加载成功，正在重试';$('pageInfo').textContent='未读取到消息数量';}}}
 async function copyText(value){
   try{if(globalThis.navigator?.clipboard?.writeText){await navigator.clipboard.writeText(value);return;}}catch{}
@@ -46,36 +69,40 @@ function render(records){
     for(const f of r.files||[])preview(f,div,user);if(r.file)preview(r.file,div,user);return div;});$('messages').append(...nodes);return {displayed:records.length,merged};
 }
 function renderSessions(){
-  const sig=JSON.stringify(sessions.map(s=>({id:s.id,title:s.title,count:s.count})))+'|'+thread;if(sig===sessionSignature)return;sessionSignature=sig;
-  $('sessions').replaceChildren(...sessions.map(s=>{const b=document.createElement('button');b.className='session'+(s.id===thread?' selected':'');const title=document.createElement('span'),meta=document.createElement('small');title.textContent=s.title;meta.textContent=`${s.count} 条 · ${new Date(s.lastAt).toLocaleDateString('zh-CN')}`;b.append(title,meta);b.onclick=()=>void selectSession(s.id).catch(error);return b;}));
-  $('moreSessions').hidden=!sessionNext;const active=sessions.find(s=>s.id===thread);$('sessionTitle').textContent=active?.title||'请选择会话';$('rename').hidden=!active||thread==='__unassigned__';
+  const sig=JSON.stringify(sessions.map(s=>({id:s.id,title:s.title,count:s.count})))+'|'+thread+'|'+sessionNext;if(sig===sessionSignature){syncControls();return;}sessionSignature=sig;
+  $('sessions').replaceChildren(...sessions.map(s=>{const b=document.createElement('button');b.className='session'+(s.id===thread?' selected':'');const title=document.createElement('span'),meta=document.createElement('small');title.textContent=s.title;meta.textContent=`${s.count} 条 · ${new Date(s.lastAt).toLocaleDateString('zh-CN')}`;b.append(title,meta);b.onclick=e=>{if(!navigationBlocked(e))void selectSession(s.id).catch(error);};return b;}));
+  $('moreSessions').hidden=!sessionNext;const active=sessions.find(s=>s.id===thread);$('sessionTitle').textContent=active?.title||'请选择会话';$('rename').hidden=!active||thread==='__unassigned__';syncControls();
 }
 async function loadSessions(older=false){
-  if(!user)return;const account=user,epoch=generation;
-  try{const d=await api('/api/history/sessions?'+new URLSearchParams({user:account,limit:'30',...(older&&sessionNext?{before:sessionNext}:{})}));if(account!==user||epoch!==generation)return;
+  if(!user||(older&&(viewLoading()||sessionsLoading||!sessionNext)))return;const account=user,epoch=generation,sequence=++sessionsRequest;sessionsLoading=true;syncControls();
+  try{const d=await api('/api/history/sessions?'+new URLSearchParams({user:account,limit:'30',...(older&&sessionNext?{before:sessionNext}:{})}));if(account!==user||epoch!==generation||sequence!==sessionsRequest)return;
     if(older){sessions=[...sessions,...d.sessions];sessionNext=d.next;}else{const olderSessions=sessions.filter(s=>!d.sessions.some(x=>x.id===s.id));sessions=[...d.sessions,...olderSessions];if(!olderSessions.length)sessionNext=d.next;}
     if(!thread&&sessions.length){thread=(sessions.find(s=>s.id===qqUI.read('qq-history-thread:'+user))||sessions.find(s=>s.id!=='__unassigned__')||sessions[0]).id;qqUI.write('qq-history-thread:'+user,thread);renderSessions();await loadPage();}else renderSessions();
-  }catch(e){error(e);throw e;}
+  }catch(e){if(account===user&&epoch===generation&&sequence===sessionsRequest){error(e);throw e;}}finally{if(sequence===sessionsRequest){sessionsLoading=false;syncControls();}}
 }
-async function selectSession(id){invalidate();hasPage=false;pageFailed=false;thread=id;qqUI.write('qq-history-thread:'+user,id);pageStack=[''];next=null;watermark=0;$('search').value='';$('exported').hidden=true;$('renameForm').hidden=true;renderSessions();await loadPage();}
-async function selectAccount(id){invalidate();hasPage=false;pageFailed=false;user=id;qqUI.write('qq-history-user',id);thread='';sessions=[];sessionNext=null;pageStack=[''];next=null;watermark=0;sessionSignature='';$('search').value='';$('messages').replaceChildren();$('empty').hidden=false;$('empty').textContent='正在读取会话…';$('sessionTitle').textContent='请选择会话';$('sessions').replaceChildren();$('renameForm').hidden=true;$('exported').hidden=true;for(const el of $('users').children)el.classList.toggle('selected',el.dataset.id===user);await loadSessions();if(!sessions.length){$('empty').textContent='暂无会话，QQ 发送新任务后会在这里出现';$('pageInfo').textContent='0 条消息';$('newer').disabled=true;$('older').disabled=true;$('rename').hidden=true;}}
+async function selectSession(id){if(viewLoading()||id===thread)return;invalidate();thread=id;qqUI.write('qq-history-thread:'+user,id);resetPage('正在读取会话消息…');$('search').value='';$('exported').hidden=true;$('renameForm').hidden=true;renderSessions();await loadPage();}
+async function selectAccount(id){
+  if(viewLoading()||id===user)return;invalidate();accountLoading=true;user=id;qqUI.write('qq-history-user',id);thread='';sessions=[];sessionNext=null;sessionSignature='';resetPage('正在读取会话…');$('search').value='';$('sessionTitle').textContent='请选择会话';$('sessions').replaceChildren();$('moreSessions').hidden=true;$('rename').hidden=true;$('renameForm').hidden=true;$('exported').hidden=true;for(const el of $('users').children)el.classList.toggle('selected',el.dataset.id===user);syncControls();
+  try{await loadSessions();if(!sessions.length){$('empty').textContent='暂无会话，QQ 发送新任务后会在这里出现';$('pageInfo').textContent='0 条消息';}}finally{accountLoading=false;syncControls();}
+}
 async function loadPage(){
-  if(!user||!thread)return;const epoch=invalidate(),controller=request=new AbortController();$('older').disabled=true;$('newer').disabled=true;$('loading').hidden=false;
+  if(!user||!thread)return;const epoch=invalidate(),controller=request=new AbortController();pageLoading=true;syncControls();
   try{const d=await api('/api/history?'+new URLSearchParams({user,thread,q:$('search').value,limit:$('pageSize').value,...(pageStack.at(-1)?{before:pageStack.at(-1)}:{})}),null,controller.signal);if(epoch!==generation)return;
-    pageFailed=false;hasPage=true;next=d.next;watermark=d.watermark;const visible=render(d.records);$('pageInfo').textContent=`第 ${pageStack.length} 页 · 本页 ${visible.displayed} 条 / 共 ${d.total} 条记录${visible.merged?`（合并 ${visible.merged} 条重复结果）`:''}`;$('newer').disabled=pageStack.length===1;$('older').disabled=!next;
-  }catch(e){if(epoch===generation&&e.name!=='AbortError'){pageFailed=true;error(e);}}finally{if(epoch===generation)$('loading').hidden=true;}
+    pageFailed=false;hasPage=true;next=d.next;watermark=d.watermark;const visible=render(d.records);$('pageInfo').textContent=`第 ${pageStack.length} 页 · 本页 ${visible.displayed} 条 / 共 ${d.total} 条记录${visible.merged?`（合并 ${visible.merged} 条重复结果）`:''}`;
+  }catch(e){if(epoch===generation&&e.name!=='AbortError'){pageFailed=true;error(e);}}finally{if(epoch===generation){await afterPaint();if(epoch===generation){pageLoading=false;syncControls();}}}
 }
 async function poll(force=false){
-  if(polling||(!force&&document.hidden))return;polling=true;const retryPage=pageFailed;
+  if(polling||(!force&&document.hidden))return;polling=true;const retryPage=pageFailed,retryEpoch=generation;
   try{const d=await api('/api/history/accounts');$('state').textContent=`${d.qq} · SQLite · 附件点击后加载`;
-    const sig=JSON.stringify(d.users);if($('users').dataset.signature!==sig){$('users').dataset.signature=sig;$('users').replaceChildren(...d.users.map(u=>{const b=document.createElement('button');b.className='user'+(u.id===user?' selected':'');b.dataset.id=u.id;b.textContent=u.label;b.onclick=()=>void selectAccount(u.id).catch(error);return b;}));if(!user&&d.users.length)await selectAccount((d.users.find(u=>u.id===qqUI.read('qq-history-user'))||d.users[0]).id);}
-    await loadSessions();if(retryPage&&pageFailed&&user&&thread)await loadPage();if(user&&thread){const epoch=generation,d=await api('/api/history/updates?'+new URLSearchParams({user,thread,after:String(watermark)}));if(epoch===generation&&d.count){$('newMessages').hidden=false;$('newMessages').textContent=`有 ${d.count} 条新记录 · 查看最新`;}}
+    const sig=JSON.stringify(d.users);if($('users').dataset.signature!==sig){$('users').dataset.signature=sig;$('users').replaceChildren(...d.users.map(u=>{const b=document.createElement('button');b.className='user'+(u.id===user?' selected':'');b.dataset.id=u.id;b.textContent=u.label;b.onclick=e=>{if(!navigationBlocked(e))void selectAccount(u.id).catch(error);};return b;}));syncControls();if(!user&&d.users.length)await selectAccount((d.users.find(u=>u.id===qqUI.read('qq-history-user'))||d.users[0]).id);}
+    if(viewLoading()||sessionsLoading)return;await loadSessions();if(viewLoading())return;if(retryPage&&pageFailed&&retryEpoch===generation&&user&&thread)await loadPage();if(user&&thread&&hasPage&&!pageFailed&&!viewLoading()){const epoch=generation;try{const d=await api('/api/history/updates?'+new URLSearchParams({user,thread,after:String(watermark)}));if(epoch===generation&&d.count){$('newMessages').hidden=false;$('newMessages').textContent=`有 ${d.count} 条新记录 · 查看最新`;}}catch(e){if(epoch===generation)error(e);}}
   }catch(e){error(e);}finally{polling=false;}
 }
-$('search').oninput=()=>{clearTimeout(searchTimer);invalidate();searchTimer=setTimeout(()=>{pageStack=[''];void loadPage();},300);};
-$('pageSize').onchange=()=>{pageStack=[''];void loadPage();};$('older').onclick=()=>{if(next){pageStack.push(next);void loadPage();}};$('newer').onclick=()=>{if(pageStack.length>1){pageStack.pop();void loadPage();}};
-$('latest').onclick=$('newMessages').onclick=()=>{pageStack=[''];void loadPage();};$('moreSessions').onclick=()=>void loadSessions(true).catch(error);
-$('rename').onclick=()=>{$('titleInput').value=sessions.find(s=>s.id===thread)?.title||'';$('renameForm').hidden=false;$('titleInput').focus();};$('cancelRename').onclick=()=>{$('renameForm').hidden=true;};
-$('renameForm').onsubmit=async e=>{e.preventDefault();const account=user,id=thread;try{const d=await api('/api/history/title',{user:account,thread:id,title:$('titleInput').value});if(account===user&&id===thread){const s=sessions.find(x=>x.id===id);if(s)s.title=d.title;renderSessions();$('renameForm').hidden=true;}}catch(e){error(e);}};
-$('export').onclick=async()=>{if(!user||!thread)return;const account=user,id=thread;$('export').disabled=true;try{const d=await api('/api/export',{user:account,thread:id});if(account===user&&id===thread){$('exported').textContent=`已导出本会话 ${d.count} 条记录：${d.file}`;$('exported').hidden=false;}}catch(e){error(e);}finally{$('export').disabled=false;}};
-window.addEventListener('pagehide',disposeAssets);document.addEventListener('qq-ui-retry',()=>void poll(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden)void poll(true);});void poll(true);setInterval(poll,10000);
+$('search').oninput=e=>{if(navigationBlocked(e))return;clearTimeout(searchTimer);invalidate();searchTimer=setTimeout(()=>{pageStack=[''];void loadPage();},300);};
+$('pageSize').onchange=e=>{if(navigationBlocked(e))return;pageStack=[''];void loadPage();};$('older').onclick=e=>{if(navigationBlocked(e))return;if(next){pageStack.push(next);void loadPage();}};$('newer').onclick=e=>{if(navigationBlocked(e))return;if(pageStack.length>1){pageStack.pop();void loadPage();}};
+$('latest').onclick=$('newMessages').onclick=e=>{if(navigationBlocked(e))return;pageStack=[''];void loadPage();};$('moreSessions').onclick=e=>{if(!navigationBlocked(e))void loadSessions(true).catch(error);};
+$('rename').onclick=e=>{if(navigationBlocked(e))return;$('titleInput').value=sessions.find(s=>s.id===thread)?.title||'';$('renameForm').hidden=false;$('titleInput').focus();};$('cancelRename').onclick=()=>{$('renameForm').hidden=true;};
+$('renameForm').onsubmit=async e=>{e.preventDefault();if(navigationBlocked(e))return;const account=user,id=thread;try{const d=await api('/api/history/title',{user:account,thread:id,title:$('titleInput').value});if(account===user&&id===thread){const s=sessions.find(x=>x.id===id);if(s)s.title=d.title;renderSessions();$('renameForm').hidden=true;}}catch(e){if(account===user&&id===thread)error(e);}};
+$('export').onclick=async()=>{if(!user||!thread||viewLoading()||exporting)return;const account=user,id=thread;exporting=true;syncControls();try{const d=await api('/api/export',{user:account,thread:id});if(account===user&&id===thread){$('exported').textContent=`已导出本会话 ${d.count} 条记录：${d.file}`;$('exported').hidden=false;}}catch(e){if(account===user&&id===thread)error(e);}finally{exporting=false;syncControls();}};
+for(const id of ['users','sessions'])for(const type of ['pointerdown','click','keydown'])$(id).addEventListener(type,e=>{if((type!=='keydown'||e.key==='Enter'||e.key===' ')&&navigationBlocked(e)){e.preventDefault();e.stopImmediatePropagation();}},true);
+syncControls();window.addEventListener('pagehide',disposeAssets);document.addEventListener('qq-ui-retry',()=>void poll(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden)void poll(true);});void poll(true);setInterval(poll,10000);
