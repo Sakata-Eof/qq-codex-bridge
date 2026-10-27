@@ -7,6 +7,7 @@ export const runtimeDir=path.join(projectRoot,'runtime');
 export const exportsDir=path.join(projectRoot,'exports');
 export const publicDir=path.join(projectRoot,'public');
 export const scriptsDir=path.join(projectRoot,'scripts');
+export const memorySkillFile=path.join(projectRoot,'skills','qq-memory-learning','SKILL.md');
 export const verificationDir=path.join(exportsDir,'verification','reports');
 export const defaultUsersRoot=path.resolve(projectRoot,'../../work/qq-users');
 export const probeWorkspaceDir=path.resolve(projectRoot,'../../work/probe');

@@ -8,6 +8,8 @@ import { Media } from '../media/processor.mjs';
 import { Memory } from './memory.mjs';
 import { Models } from './models.mjs';
 import { MessageBatches } from './message-batches.mjs';
+import { memorySkillFile } from '../paths.mjs';
+import { MemoryReview } from './memory-review.mjs';
 export class Accounts {
   constructor(config,qq,runtime,persist,log,history=null,tasks=null){this.config=config;this.qq=qq;this.runtime=runtime;this.persist=persist;this.log=log;this.history=history;this.tasks=tasks;this.taskTrackingError=new Map();this.instances=new Map();this.starting=new Map();}
   taskEvent(user,e,details){
@@ -17,14 +19,16 @@ export class Accounts {
   }
   taskSummary(user,e){try{const summary=this.tasks?.summary(user.id,{chat:e.chat,group:e.group})||'';return summary+(this.taskTrackingError.has(user.id)?'\n任务阶段记录不完整；执行未受影响。':'');}catch{this.taskTrackingError.set(user.id,true);return '任务诊断暂不可用';}}
   userKey(id){return crypto.createHash('sha256').update(this.config.appId+':'+id).digest('hex').slice(0,24);}
+  memory(user){return new Memory(path.join(this.runtime,'global-memory.json'),path.join(this.runtime,'users',this.userKey(user.id),'private-memory.json'));}
   async get(user){
-    if(this.instances.has(user.id)){const existing=this.instances.get(user.id);if(existing.rpc.child?.exitCode===null&&!existing.rpc.child.killed)return existing;this.instances.delete(user.id);}
+    if(this.instances.has(user.id)){const existing=this.instances.get(user.id);if(existing.rpc.child?.exitCode===null&&!existing.rpc.child.killed)return existing;existing.memoryReview?.stop();this.instances.delete(user.id);}
     if(this.starting.has(user.id))return this.starting.get(user.id);
     const promise=(async()=>{
       const stateDir=path.join(this.runtime,'users',this.userKey(user.id));fs.mkdirSync(stateDir,{recursive:true});
       const home=path.join(stateDir,'codex-home');fs.mkdirSync(home,{recursive:true});
       const original=process.env.CODEX_HOME||path.join(os.homedir(),'.codex');
       for(const file of ['auth.json','config.toml','AGENTS.md']){const source=path.join(original,file),target=path.join(home,file);if(fs.existsSync(source)&&(!fs.existsSync(target)||file==='auth.json'))fs.copyFileSync(source,target);}
+      const memorySkillPath=path.join(home,'skills','qq-memory-learning','SKILL.md');fs.mkdirSync(path.dirname(memorySkillPath),{recursive:true});fs.copyFileSync(memorySkillFile,memorySkillPath);
       // Migrate only this account's already-recorded thread, never other desktop or QQ histories.
       const sessionFile=path.join(stateDir,'sessions.json'),legacy=path.join(original,'sessions');
       if(fs.existsSync(sessionFile)&&fs.existsSync(legacy)){
@@ -32,12 +36,12 @@ export class Accounts {
         for(const relative of fs.readdirSync(legacy,{recursive:true})){if(!ids.some(id=>relative.endsWith(id+'.jsonl')))continue;const target=path.join(home,'sessions',relative);if(!fs.existsSync(target)){fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(legacy,relative),target);}}
       }
       const rpc=new CodexRPC(this.config.codexBinary,{CODEX_HOME:home});await rpc.start();
-      const userConfig={...this.config,ownerOpenId:user.id,codexHome:home,workspace:user.workspace,allowedRoots:user.allowedRoots,allowedGroups:user.allowedGroups||[]};
+      const userConfig={...this.config,ownerOpenId:user.id,codexHome:home,memorySkillPath,workspace:user.workspace,allowedRoots:user.allowedRoots,allowedGroups:user.allowedGroups||[]};
       this.history?.importCodex(user.id);
       const media=new Media(this.config,this.qq);media.onMedia=(e,files,text)=>this.history?.record(user.id,{kind:'assets',messageId:e.id,threadId:e.historyThreadId,files,text});
-      const bridge=new Bridge(userConfig,rpc,(e,text,buttons)=>buttons?.length?this.qq.sendButtons(e,text,buttons):this.qq.send(e,text),this.persist,path.join(stateDir,'sessions.json'),this.log,media,new Memory(path.join(this.runtime,'global-memory.json'),path.join(stateDir,'private-memory.json')));
+      const bridge=new Bridge(userConfig,rpc,(e,text,buttons)=>buttons?.length?this.qq.sendButtons(e,text,buttons):this.qq.send(e,text),this.persist,path.join(stateDir,'sessions.json'),this.log,media,this.memory(user));
       bridge.onTaskEvent=(e,details)=>this.taskEvent(user,e,details);bridge.taskSummary=e=>this.taskSummary(user,e);
-      const batches=new MessageBatches({delayMs:this.config.messageMergeMs??3000,maxWaitMs:10000,handle:e=>bridge.handle(e),onError:async(e,err)=>{
+      const batches=new MessageBatches({delayMs:this.config.messageMergeMs??3000,maxWaitMs:10000,handle:async e=>{try{return await bridge.handle(e);}finally{setImmediate(()=>bridge.flushMemoryReview());}},onError:async(e,err)=>{
         this.log(`消息处理失败：${err.message}`);
         this.history?.record(user.id,{kind:'error',messageId:e.id,threadId:e.historyThreadId,text:err.message});
         await bridge.say(e,`消息处理失败：${err.message}`);
@@ -45,12 +49,13 @@ export class Accounts {
       bridge.pendingFor=e=>batches.pendingFor(e);bridge.cancelPending=e=>batches.cancel(e);
       rpc.on('offline',()=>batches.cancelAll());
       bridge.onResult=(e,result)=>this.history?.record(user.id,{kind:result.status==='failed'?'error':'result',messageId:e.id,...result});
-      const models=new Models(rpc,user,this.persist,()=>batches.busy()||bridge.inputTasks>0||bridge.mediaTransfers>0||[...bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));
+      const models=new Models(rpc,user,this.persist,()=>bridge.memoryReview?.busy||batches.busy()||bridge.inputTasks>0||bridge.mediaTransfers>0||[...bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));
       try{await models.init();}catch(err){rpc.stop();throw err;}bridge.models=models;
+      const memoryReview=new MemoryReview({rpc,memory:bridge.memory,cwd:user.workspace,skillPath:memorySkillPath,modelParams:()=>models.params(),isIdle:()=>!models.changing&&!batches.busy()&&bridge.inputTasks===0&&bridge.mediaTransfers===0&&![...bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering),log:this.log});bridge.memoryReview=memoryReview;
       bridge.onSession=(e,s)=>{for(const source of e.sourceEvents||[e]){source.historyThreadId=s.threadId;this.history?.bindMessage(user.id,source.id,s.threadId,e.text.replace(/^\/codex\s+/,'')||e.attachments?.[0]?.filename||'多模态对话');}};
       const seenFile=path.join(stateDir,'seen.json');if(fs.existsSync(seenFile))bridge.seen=new Map(JSON.parse(fs.readFileSync(seenFile,'utf8')));
       bridge.persistSeen=seen=>{fs.writeFileSync(seenFile+'.tmp',JSON.stringify([...seen]),{mode:0o600});fs.renameSync(seenFile+'.tmp',seenFile);};
-      const instance={rpc,bridge,user,models,batches};this.instances.set(user.id,instance);return instance;
+      const instance={rpc,bridge,user,models,batches,memoryReview};this.instances.set(user.id,instance);return instance;
     })();
     this.starting.set(user.id,promise);try{return await promise;}finally{this.starting.delete(user.id);}
   }
@@ -77,7 +82,7 @@ export class Accounts {
     if(batches&&(!e.text.startsWith('/')||e.text.startsWith('/codex ')))await batches.push(e);
     else await bridge.handle(e);
   }
-  busy(){return this.starting.size>0||[...this.instances.values()].some(x=>x.batches?.busy()||x.models?.changing||x.bridge.inputTasks>0||x.bridge.mediaTransfers>0||[...x.bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));}
+  busy(){return this.starting.size>0||[...this.instances.values()].some(x=>x.memoryReview?.busy||x.batches?.busy()||x.models?.changing||x.bridge.inputTasks>0||x.bridge.mediaTransfers>0||[...x.bridge.sessions.values()].some(s=>s.active||s.busy||s.delivering));}
   status(){return this.config.users.map(user=>{const instance=this.instances.get(user.id);return {id:user.id,label:user.label,workspace:user.workspace,model:instance?.models.current()||{model:user.model||null,effort:user.reasoningEffort||null,inherited:!user.model},process:instance?.rpc.child?.pid||null,sessions:instance?[...instance.bridge.sessions.values()].map(s=>({cwd:s.cwd,threadId:s.threadId,status:s.status,last:s.last,model:s.model,effort:s.effort})):[]};});}
-  stop(){for(const x of this.instances.values()){x.batches?.cancelAll();x.rpc.stop();}}
+  stop(){for(const x of this.instances.values()){x.batches?.cancelAll();x.memoryReview?.stop();x.rpc.stop();}}
 }

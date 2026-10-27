@@ -15,7 +15,8 @@ try {
             if ($candidate -and $candidate.Name -eq 'node.exe' -and $candidate.CommandLine.Contains((Join-Path $bridgeRoot 'server.mjs'))) { $existing = Get-Process -Id $bridgePid -ErrorAction SilentlyContinue }
         }
         if ($existing) { $child = $existing } else {
-            $child = Start-Process -FilePath $nodePath -ArgumentList ('"' + (Join-Path $bridgeRoot 'server.mjs') + '"') -WorkingDirectory $bridgeRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtime 'stdout.log') -RedirectStandardError (Join-Path $runtime 'stderr.log')
+            # The GUI launcher has no console; do not allocate one for Node either.
+            $child = Start-Process -FilePath $nodePath -ArgumentList ('"' + (Join-Path $bridgeRoot 'server.mjs') + '"') -WorkingDirectory $bridgeRoot -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $runtime 'stdout.log') -RedirectStandardError (Join-Path $runtime 'stderr.log')
         }
         [IO.File]::WriteAllText((Join-Path $runtime 'watchdog.pid'), [string]$PID)
         $failures = 0

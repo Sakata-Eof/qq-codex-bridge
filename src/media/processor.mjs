@@ -3,23 +3,23 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { pipeline } from 'node:stream/promises';
 import { fetch } from 'undici';
 import { scriptsDir } from '../paths.mjs';
 import { safeMediaURL } from '../qq/media-url.mjs';
 import { within } from '../shared/path-security.mjs';
 const run=promisify(execFile);
 export class Media {
-  constructor(config,qq,{run:runCommand=run}={}){this.config=config;this.qq=qq;this.runCommand=runCommand;}
+  constructor(config,qq,{run:runCommand=run,fetch:fetchMedia=fetch}={}){this.config=config;this.qq=qq;this.runCommand=runCommand;this.fetchMedia=fetchMedia;}
   async download(url,target) {
     let current=safeMediaURL(url);
     for(let i=0;i<4;i++){
-      const r=await fetch(current,{redirect:'manual',signal:AbortSignal.timeout(60000)});
+      const r=await this.fetchMedia(current,{redirect:'manual',signal:AbortSignal.timeout(60000)});
       if([301,302,303,307,308].includes(r.status)){await r.body?.cancel();current=safeMediaURL(new URL(r.headers.get('location'),current).href);continue;}
-      if(!r.ok)throw new Error(`附件下载 HTTP ${r.status}`);
-      if(Number(r.headers.get('content-length')||0)>50*1024*1024){await r.body?.cancel();throw new Error('附件超过 50MB 本地上限');}
-      const parts=[];let total=0;
-      for await(const chunk of r.body){total+=chunk.length;if(total>50*1024*1024)throw new Error('附件超过 50MB 本地上限');parts.push(chunk);}
-      fs.writeFileSync(target,Buffer.concat(parts));return target;
+      if(!r.ok){await r.body?.cancel();throw new Error(`附件下载 HTTP ${r.status}`);}
+      const temporary=target+'.'+crypto.randomBytes(8).toString('hex')+'.part';
+      try{await pipeline(r.body,fs.createWriteStream(temporary,{flags:'wx'}));fs.renameSync(temporary,target);return target;}
+      finally{fs.rmSync(temporary,{force:true});}
     }
     throw new Error('附件重定向次数过多');
   }
@@ -37,7 +37,6 @@ export class Media {
       const inferred={'.mp4':'video/mp4','.mov':'video/quicktime','.webm':'video/webm','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.mp3':'audio/mpeg','.wav':'audio/wav','.amr':'audio/amr'}[path.extname(name).toLowerCase()];
       const rawType=String(a.content_type||''),ct=(!rawType||rawType==='file'||rawType==='application/octet-stream')?(inferred||rawType):rawType,voice=ct==='voice'||ct.startsWith('audio/');
       if(voice&&a.asr_refer_text?.trim()){notes.push(`语音识别文本：${a.asr_refer_text.trim()}`);continue;}
-      if(Number(a.size)>50*1024*1024)throw new Error('附件超过 50MB 本地上限');
       const file=path.join(folder,`${i}-${name}${voice&&a.voice_wav_url?'.wav':ct.startsWith('image/')&&!path.extname(name)?'.png':''}`);
       await this.download(voice&&a.voice_wav_url?a.voice_wav_url:a.url,file);
       files.push({path:file,name:name,type:ct});
@@ -64,12 +63,14 @@ export class Media {
   }
   saveGenerated(item,cwd,roots){
     if(item.failure)return null;let data;
-    if(item.savedPath){if(!path.isAbsolute(item.savedPath)||!fs.existsSync(item.savedPath)||!roots.some(root=>withinMediaRoot(root,item.savedPath)))throw new Error('生成图片路径不属于当前账号');if(fs.statSync(item.savedPath).size>50*1024*1024)throw new Error('生成图片超过 50MB');data=fs.readFileSync(item.savedPath);}
-    else{const value=String(item.result||'').replace(/^data:image\/[a-z+]+;base64,/, '');if(!value||value.length>70*1024*1024||! /^[A-Za-z0-9+/]+={0,2}$/.test(value))return null;data=Buffer.from(value,'base64');}
-    if(data.length>50*1024*1024)throw new Error('生成图片超过 50MB');
+    if(item.savedPath){
+      if(!path.isAbsolute(item.savedPath)||!fs.existsSync(item.savedPath)||!roots.some(root=>withinMediaRoot(root,item.savedPath)))throw new Error('生成图片路径不属于当前账号');
+      const fd=fs.openSync(item.savedPath,'r');try{const header=Buffer.alloc(12);data=header.subarray(0,fs.readSync(fd,header,0,header.length,0));}finally{fs.closeSync(fd);}
+    }
+    else{const value=String(item.result||'').replace(/^data:image\/[a-z+]+;base64,/, ''),payload=value.replace(/={1,2}$/, '');if(!payload||/[^A-Za-z0-9+/]/.test(payload))return null;data=Buffer.from(value,'base64');}
     const ext=data.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex'))?'.png':data[0]===255&&data[1]===216?'.jpg':data.toString('ascii',0,4)==='RIFF'&&data.toString('ascii',8,12)==='WEBP'?'.webp':null;
     if(!ext)throw new Error('生成结果不是可识别的图片');
-    const folder=path.join(cwd,'.qq-outgoing/generated');fs.mkdirSync(folder,{recursive:true});const file=path.join(folder,crypto.createHash('sha256').update(String(item.id)).digest('hex').slice(0,20)+ext);fs.writeFileSync(file,data);
+    const folder=path.join(cwd,'.qq-outgoing/generated');fs.mkdirSync(folder,{recursive:true});const file=path.join(folder,crypto.createHash('sha256').update(String(item.id)).digest('hex').slice(0,20)+ext);if(item.savedPath)fs.copyFileSync(item.savedPath,file);else fs.writeFileSync(file,data);
     return file;
   }
   async sendFile(e,file){

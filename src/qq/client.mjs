@@ -14,6 +14,25 @@ const markdownRejected=err=>err.definite!==false&&!(Number(err.status)>=500)&&([
 const definiteRejection=err=>err.definite===true||(err.definite!==false&&Number(err.status)>=400&&Number(err.status)<500&&Number(err.status)!==408)||markdownRejected(err);
 const quotaError=()=>Object.assign(new Error('QQ 当前消息回复次数已用完'),{definite:true});
 function deliveryError(err,report){try{Object.assign(err,report);}catch{}return err;}
+async function fileHashes(file,size){
+  const md5=crypto.createHash('md5'),sha1=crypto.createHash('sha1'),first=crypto.createHash('md5');let offset=0;
+  for await(const chunk of file.createReadStream({autoClose:false})){
+    md5.update(chunk);sha1.update(chunk);
+    if(offset<10002432)first.update(chunk.subarray(0,10002432-offset));
+    offset+=chunk.length;
+  }
+  if(offset!==size)throw new Error('发送文件在读取时发生变化，请重新请求');
+  return {md5:md5.digest('hex'),sha1:sha1.digest('hex'),md5_10m:first.digest('hex')};
+}
+async function readFilePart(file,start,length){
+  const bytes=Buffer.allocUnsafe(length);let offset=0;
+  while(offset<length){
+    const {bytesRead}=await file.read(bytes,offset,length-offset,start+offset);
+    if(!bytesRead)throw new Error('发送文件在读取时发生变化，请重新请求');
+    offset+=bytesRead;
+  }
+  return bytes;
+}
 function splitPlain(value,limit=1300){
   const parts=[];let text=String(value);
   while(text){
@@ -159,34 +178,38 @@ export class QQ extends EventEmitter {
     }
   }
   async sendFile(e,file){
-    let messageAttempted=false,accepted=false;
+    let messageAttempted=false,accepted=false,handle;
     try{
     if((this.counts.get(e.id)||0)>=(e.group?5:4))throw new Error('回复次数已用完，请用 /file 指令重新请求');
-    const size=fs.statSync(file).size;if(size>50*1024*1024)throw new Error('发送文件上限 50MB');if(!size)throw new Error('不能发送空文件');
-    const data=fs.readFileSync(file),ext=path.extname(file).toLowerCase();
+    handle=await fs.promises.open(file,'r');const {size}=await handle.stat();if(!size)throw new Error('不能发送空文件');
+    const hashes=await fileHashes(handle,size),ext=path.extname(file).toLowerCase();
     const type=['.png','.jpg','.jpeg','.webp','.gif','.bmp'].includes(ext)?1:ext==='.mp4'?2:['.mp3','.wav','.silk','.ogg'].includes(ext)?3:4;
     const prefix=`/v2/${e.group?'groups':'users'}/${encodeURIComponent(e.chat)}`;
-    const hash=(name,b=data)=>crypto.createHash(name).update(b).digest('hex');
-    const raw=await this.api(prefix+'/upload_prepare',{file_type:type,file_size:String(size),file_name:path.basename(file),md5:hash('md5'),sha1:hash('sha1'),md5_10m:hash('md5',data.subarray(0,10002432))});
+    const hash=bytes=>crypto.createHash('md5').update(bytes).digest('hex');
+    const raw=await this.api(prefix+'/upload_prepare',{file_type:type,file_size:String(size),file_name:path.basename(file),...hashes});
     const prep=raw.data||raw;
     if(!prep.upload_id||!Array.isArray(prep.parts))throw new Error('QQ 预上传未返回分片列表');
     let offset=0;
     for(const part of prep.parts){
-      const block=Number(part.block_size||prep.block_size);if(!Number.isInteger(block)||block<1)throw new Error('QQ 分片大小无效');
-      const bytes=data.subarray(offset,Math.min(offset+block,data.length));offset+=bytes.length;
+      const block=Number(part.block_size||prep.block_size);if(!Number.isSafeInteger(block)||block<1||offset>=size)throw new Error('QQ 分片大小无效');
       const url=safeMediaURL(part.presigned_url);
+      const bytes=await readFilePart(handle,offset,Math.min(block,size-offset));offset+=bytes.length;
       const r=await fetch(url,{method:'PUT',body:bytes,redirect:'error',signal:AbortSignal.timeout(120000)});
       if(!r.ok)throw new Error(`QQ 分片上传 HTTP ${r.status}`);await r.body?.cancel();
       const deadline=Date.now()+Math.min(120000,Number(prep.upload_config?.retry_timeout||120)*1000);
-      for(;;){try{await this.api(prefix+'/upload_part_finish',{upload_id:prep.upload_id,part_index:part.index,block_size:String(bytes.length),md5:hash('md5',bytes)});break;}catch(err){if(!err.message.includes('40093001')||Date.now()>deadline)throw err;await new Promise(r=>setTimeout(r,1000));}}
+      for(;;){try{await this.api(prefix+'/upload_part_finish',{upload_id:prep.upload_id,part_index:part.index,block_size:String(bytes.length),md5:hash(bytes)});break;}catch(err){if(!err.message.includes('40093001')||Date.now()>deadline)throw err;await new Promise(r=>setTimeout(r,1000));}}
     }
-    if(offset!==data.length)throw new Error('QQ 分片未覆盖整个文件');
+    if(offset!==size)throw new Error('QQ 分片未覆盖整个文件');
+    const uploaded=handle;handle=null;await uploaded.close();
     const result=await this.api(prefix+'/files',{file_type:type,upload_id:prep.upload_id,file_name:path.basename(file),srv_send_msg:false});
     const info=result.file_info||result.data?.file_info;if(!info)throw new Error('QQ 文件上传未返回 file_info');
     const n=(this.counts.get(e.id)||0)+1;if(n>(e.group?5:4))throw new Error('回复次数已用完，请用 /file 指令重新请求');this.counts.set(e.id,n);
     messageAttempted=true;await this.api(prefix+'/messages',{msg_type:7,media:{file_info:info},msg_id:e.id,msg_seq:n});accepted=true;
     this.emit('sent',{event:e,file,text:path.basename(file),sequence:n});
     return {acceptedParts:1,totalParts:1,truncated:false};
-    }catch(err){throw deliveryError(err,{accepted,acceptedParts:accepted?1:0,totalParts:1,auditFailed:accepted,uncertain:messageAttempted&&!accepted&&!definiteRejection(err),...(!messageAttempted?{definite:true}:{})});}
+    }catch(err){
+      if(handle)try{await handle.close();}catch{}
+      throw deliveryError(err,{accepted,acceptedParts:accepted?1:0,totalParts:1,auditFailed:accepted,uncertain:messageAttempted&&!accepted&&!definiteRejection(err),...(!messageAttempted?{definite:true}:{})});
+    }
   }
 }

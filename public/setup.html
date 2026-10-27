@@ -1,6 +1,275 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QQ · 本机 Codex</title>
-<style>body{background:#f5f5f2;color:#202623;font:16px/1.65 system-ui;margin:0}main{max-width:800px;margin:36px auto;padding:28px;background:white;border-radius:18px}h1{margin:0 0 12px}label{display:block;margin-top:14px}select{max-width:100%;padding:10px;margin:6px;border:1px solid #ccc;border-radius:7px;font:inherit}input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #ccc;border-radius:7px;font:inherit}input[type=checkbox]{width:auto}button{background:#174d37;color:white;border:0;padding:11px 18px;border-radius:8px;cursor:pointer;margin:18px 8px 4px 0}pre{background:#f0f3ef;padding:15px;white-space:pre-wrap;word-break:break-word}small{color:#58645e}code{user-select:all}.result{border-top:1px solid #ddd;padding-top:10px}</style>
-<main><h1>QQ · 本机 Codex</h1><p><a href="/history">打开消息历史看板 →</a></p><p>把专用 QQ 机器人的凭据填在这里。配置只保存到本机，不会显示在聊天回复中。</p>
-<form id="form"><label>新机器人 AppID<input id="appId" autocomplete="off" required></label><label>AppSecret／ClientSecret<input id="clientSecret" type="password" autocomplete="new-password" placeholder="已保存后可留空"></label><label><input id="sandbox" type="checkbox"> 使用 QQ 沙箱接口（按开放平台当前测试环境选择）</label><button>保存并连接 QQ</button><button type="button" id="reconnect">重新连接 Codex</button></form>
-<p id="connectionState" role="status">正在连接本机页面…</p><p id="notice"></p><h2>连接状态</h2><pre id="status">加载中…</pre><h2>QQ 指令面板</h2><p id="commands">等待同步…</p><button type="button" id="syncCommands">同步 QQ 指令列表</button><p>连接 QQ 后自动核对专用 Codex 面板。QQ 对话中打开指令列表即可选用；后接参数的指令需要填写路径、文字或编号。<code>/buttons</code> 打开原生按钮菜单，<code>/media-test</code> 检查文件、图片和音频回传。</p><h2>添加 QQ 账号</h2><label>账号备注<input id="userLabel" placeholder="例如：主账号、工作账号"></label><button type="button" id="pairButton">生成一次性配对码</button><div id="pair"></div><p>每个账号分别在 QQ 私聊新机器人发送分配给自己的配对指令。配对码一小时内有效，使用后失效。绑定后直接发文字、图片、语音、视频或文件。</p><p>支持 <code>/help</code>、<code>/status</code>、<code>/result</code>、<code>/stop</code>、<code>/new</code>、<code>/project 绝对路径</code>、<code>/file 绝对路径</code>、<code>/voice 文字</code>。审批通过原生按钮，或 <code>/approve 编号</code>、<code>/deny 编号</code> 回答。</p>
-<small>账号拥有独立的 Codex 进程、会话、审批、会话存储与默认工作目录。图片直接传入模型；语音转写后执行；视频以抽样帧与音轨分析，文件保存后读取。发送附件上限 50MB，视频上限 10 分钟。服务运行期间电脑须保持开机。</small><h2>全局记忆</h2><p>这里的共同规则会加载给所有授权账号。账号私有内容不会自动进入全局记忆。QQ 使用 <code>/remember 内容</code> 保存账号记忆，<code>/memory</code> 查看，<code>/forget 编号</code> 删除。</p><textarea id="globalMemory" rows="5" style="width:100%;box-sizing:border-box"></textarea><button id="saveMemory" type="button">保存全局记忆</button><h2>自动会话管理</h2><label>会话最多轮数<input id="rotationTurns" type="number" min="5" max="200" value="40"></label><label>空闲几小时后换会话<input id="idleHours" type="number" min="1" max="72" value="6"></label><button id="saveLifecycle" type="button">保存会话策略</button><p>Codex 按模型默认阈值自动压缩长上下文。达到这里的轮数或空闲时间后，下次任务会创建新会话，并携带最近三轮的简短摘要、全局记忆和账号记忆。正在执行的任务不会被自动切断。QQ 使用 <code>/context</code> 查看状态，<code>/new</code> 手动换会话。</p><h2>已绑定账号与本机结果</h2><div id="results"></div><h2>服务日志</h2><pre id="logs"></pre></main><noscript>页面需要启用 JavaScript 才能读取本机服务。</noscript><script src="/ui-client.js"></script><script src="/setup.js"></script></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>管理控制台 · QQ Codex Bridge</title>
+<style>
+:root{--canvas:#f3f6fb;--surface:#fff;--ink:#1e293b;--muted:#63728a;--line:#e2e8f0;--blue:#315bdc;--blue-soft:#edf2ff;--green:#187653;--radius:14px;--font:"Segoe UI Variable","Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.65 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+button,input,textarea,select{font:inherit}button,a,input,textarea,select,summary{-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:3px solid #8da8ff;outline-offset:3px}
+h1,h2,h3,p{margin:0}h1{font-size:28px;line-height:1.35;letter-spacing:-.7px;font-weight:650}h2{font-size:17px;line-height:1.5;font-weight:650;letter-spacing:-.2px}h3{font-size:15px;font-weight:650}
+small{font-size:12px;color:var(--muted)}
+code,pre{font-family:Consolas,"Cascadia Code",monospace}
+code{font-size:.9em;background:#edf1f7;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere;user-select:all}
+pre{margin:14px 0 0;padding:18px;background:#f6f8fc;border:1px solid var(--line);border-radius:9px;color:#485772;font-size:12px;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
+svg.icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.skip-link{position:fixed;top:-60px;left:16px;z-index:10;background:var(--blue);color:white;padding:10px 18px;border-radius:8px}.skip-link:focus{top:12px}
+.app-shell{display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:30px 18px 22px;background:var(--surface);border-right:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:11px;padding:0 10px;color:var(--ink)}.brand:hover{text-decoration:none}
+.brand-mark{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--blue);color:white;flex:none}.brand-mark .icon{width:24px;height:24px}
+.brand strong{display:block;font-size:14px;letter-spacing:-.4px;line-height:1.3;white-space:nowrap}.brand small{display:block;font-size:11px;margin-top:3px;color:#7c889b}
+.nav-label{font-size:11px;color:#8390a4;margin:40px 14px 12px}.sidebar nav{display:grid;gap:6px}
+.nav-link{display:flex;align-items:center;gap:12px;padding:11px 14px;color:#647189;border-radius:8px;font-size:13px;font-weight:550;min-height:44px}
+.nav-link:hover{background:#f5f7fc;text-decoration:none;color:var(--ink)}.nav-link[aria-current=page]{color:var(--blue);background:var(--blue-soft)}
+.nav-link[aria-current=page]:after{content:"";margin-left:auto;width:5px;height:5px;background:var(--blue);border-radius:50%}
+.sidebar-footer{margin-top:auto;padding:22px 12px 0;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+.sidebar-footer p{display:flex;align-items:center;gap:7px;font-weight:550;color:#4a5b72}.sidebar-footer .icon{width:15px;height:15px}.sidebar-footer small{display:block;font-size:11px;margin-top:7px}
+.workspace{min-width:0}.topbar{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 38px;background:rgba(255,255,255,.75)}
+.breadcrumb{display:flex;align-items:center;gap:12px;color:#8894a7;font-size:12px}.breadcrumb strong{font-weight:500;color:#53637b}
+.history-link{display:flex;align-items:center;gap:8px;color:#53637b;font-size:12px;font-weight:550}.history-link .icon{width:17px;height:17px}
+main{max-width:1320px;margin:auto;padding:34px 38px 54px;min-width:0}
+.page-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:26px}
+#pageDescription{color:var(--muted);margin-top:8px;font-size:13px}
+#connectionState{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+#connectionState:before{content:"";width:6px;height:6px;border-radius:50%;background:#98a5b9;flex:none}
+#connectionState[data-tone=ok]:before{background:var(--green)}#connectionState[data-tone=error]:before{background:#c34747}#connectionState[data-tone=warn]:before{background:#c28723}
+#notice:not(:empty){padding:12px 16px;margin-bottom:22px;border:1px solid #cfdbfa;border-radius:9px;background:var(--blue-soft);color:#344f94;font-size:13px;overflow-wrap:anywhere}#notice:empty{display:none}
+#connectionNotice{margin:0 0 20px!important;font-size:13px}#connectionNotice button{min-height:36px;padding:6px 12px}#connectionNotice:not([hidden])~#notice{display:none}
+.panel{min-width:0}.overview-grid{display:grid;grid-template-columns:minmax(0,1fr) 244px;gap:20px}
+.surface{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}.card{padding:25px 28px}
+.section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:23px}.section-heading small{font-size:11px}
+.connection-map{display:grid;grid-template-columns:minmax(0,1fr) 64px minmax(0,1fr);align-items:center;padding:14px 0 24px}
+.endpoint{text-align:center;min-width:0}
+.service-icon{display:grid;place-items:center;width:58px;height:58px;margin:0 auto 15px;border-radius:16px;background:#edf4ff;color:#3576dc}.service-icon .icon{width:28px;height:28px;stroke-width:1.5}.service-icon.codex{background:#f0f1fa;color:#6266a2}
+.endpoint h3{font-size:15px;margin-bottom:4px}.endpoint p{font-size:11px;color:var(--muted);margin-bottom:14px}
+.bridge-line{display:flex;align-items:center;color:#899ab6;gap:6px;padding-bottom:55px}.bridge-line:before,.bridge-line:after{content:"";height:1px;flex:1;background:#d2dcf0}.bridge-line .icon{width:18px;height:18px;stroke-width:1.5}
+.status-pill{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:5px;padding:3px 9px;background:#f0f3f8;color:#68768e;font-size:11px;font-weight:550;max-width:100%}
+.status-pill:before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;flex:none}
+.status-pill[data-tone=ok]{color:var(--green);background:#edf7f1}.status-pill[data-tone=warn]{color:#90651c;background:#fff5df}.status-pill[data-tone=error]{color:#b54343;background:#fff0f0}
+.connection-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding-top:16px}.connection-footer p{font-size:11px;color:var(--muted)}
+.text-link{font-size:12px;font-weight:550;display:inline-flex;align-items:center;gap:6px}.text-link .icon{width:15px;height:15px}
+.resource-card{padding:25px 24px}.resource-card h2{font-size:15px}
+.resource-stat{display:flex;align-items:baseline;gap:9px;margin-top:20px}.resource-stat strong{font-size:35px;font-weight:550;line-height:1.2;letter-spacing:-1.5px;font-variant-numeric:tabular-nums}.resource-stat span{color:var(--muted);font-size:12px}
+.resource-card>p{color:#8390a4;font-size:11px;margin:7px 0 18px}.resource-card hr{border:0;border-top:1px solid var(--line);margin:0}
+.section-label{margin:29px 0 14px;display:flex;align-items:center;justify-content:space-between;gap:12px}.section-label h2{font-size:14px}
+.quick-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.quick-action{display:flex;align-items:flex-start;gap:12px;padding:20px 18px;color:var(--ink);background:white;border:1px solid var(--line);border-radius:10px}
+.quick-action:hover{border-color:#b2c4f5;text-decoration:none;background:#fafcff}.quick-action>.icon{color:#7187b5;margin-top:2px}
+.quick-action strong{font-size:13px;font-weight:600;display:block}.quick-action small{display:block;font-size:11px;line-height:1.7;margin-top:4px}
+.disclosure{margin-top:20px;padding:0 21px}.disclosure summary{font-size:12px;color:#61718b;cursor:pointer;padding:16px 0}.disclosure pre{margin:0 0 20px}
+.settings-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(260px,1fr);align-items:start;gap:22px}
+.card-intro{font-size:13px;color:var(--muted);margin:8px 0 23px;max-width:65ch}.card>p,.card>details{overflow-wrap:anywhere}
+label{display:block;font-size:12px;font-weight:550;color:#46556c;margin:18px 0 0}
+input:not([type=checkbox]),textarea,select{display:block;width:100%;max-width:100%;margin-top:7px;padding:10px 12px;border:1px solid #d8e0eb;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6}
+input::placeholder,textarea::placeholder{color:#96a0b1}
+input:not([type=checkbox]):focus,textarea:focus,select:focus{border-color:#7997eb;outline:3px solid #edf2ff;outline-offset:0}
+textarea{resize:vertical;min-height:100px;line-height:1.8}input[type=checkbox]{width:16px;height:16px;accent-color:var(--blue);flex:none;margin:0}
+.field-help{font-size:11px;color:var(--muted);font-weight:400;display:block;margin-top:6px}
+.check-field{display:flex;align-items:flex-start;gap:9px;font-weight:400;line-height:1.5;margin-top:22px}.check-field input{margin-top:2px}
+button,.button-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:9px 16px;border:1px solid transparent;border-radius:7px;background:var(--blue);color:white;font-size:12px;font-weight:550;cursor:pointer;line-height:1.6}
+button:hover,.button-link:hover{background:#234cc5;text-decoration:none}button:disabled{opacity:.5;cursor:wait}
+button.secondary,.button-link.secondary{background:white;color:#53637b;border-color:#d8e0eb}button.secondary:hover,.button-link.secondary:hover{background:#f6f8fc;color:var(--ink)}
+.actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:24px}.actions small{font-size:11px}
+.subsection{margin-top:28px;padding-top:23px;border-top:1px solid var(--line)}.subsection h3{margin-bottom:8px}.subsection>p{font-size:12px;color:var(--muted)}
+#commands{font-size:12px;color:var(--muted);margin:10px 0 18px;line-height:1.9}
+.help-note{background:#f7f9fd;border-radius:9px;padding:18px 20px;color:var(--muted);font-size:12px;line-height:1.9}
+.help-note h3{color:#485973;font-size:13px;margin-bottom:8px}.help-note p+p{margin-top:13px}.help-note ul{padding-left:18px;margin:10px 0 0}.help-note li+li{margin-top:7px}
+.help-note details{border-top:1px solid var(--line);margin-top:16px;padding-top:12px}.help-note summary{cursor:pointer;color:#53637b;font-size:12px}.help-note details p{margin-top:10px}
+.pair-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,.8fr);gap:30px;align-items:start}.pair-layout label{margin-top:0}.pair-layout .actions{margin-top:14px}
+#pair:empty{display:none}#pair pre{background:var(--blue-soft);border-color:#d5dffc;color:#344f94;user-select:all}
+.empty-state{padding:30px 22px;border:1px dashed #cfd9e9;border-radius:10px;text-align:center;background:#f9fbfe;color:var(--muted);font-size:13px}
+#results{display:grid;gap:18px}.result{background:white;border:1px solid var(--line);border-radius:var(--radius);padding:24px 28px;min-width:0;overflow-wrap:anywhere}
+.result h3{display:flex;align-items:center;gap:9px;margin-bottom:17px}.result h3:before,.memory-account h3:before{content:"";width:7px;height:7px;background:#9baee1;border-radius:2px;flex:none}
+.result input{font-family:Consolas,"Microsoft YaHei UI",monospace;font-size:12px}.result button{margin:12px 9px 0 0}.result p{font-size:12px;color:var(--muted);margin-top:20px}.result select{display:inline-block;width:auto;margin:12px 8px 0 0}.result small{display:block;margin-top:10px}.result pre{margin-top:20px;max-height:340px;overflow:auto}
+.memory-account{background:white;border:1px solid var(--line);border-radius:var(--radius);padding:26px 28px;margin-top:18px;overflow-wrap:anywhere;min-width:0}
+.memory-account h3{display:flex;align-items:center;gap:9px;margin-bottom:3px}.memory-account>small{font-size:11px;color:#7e8ba1}.memory-account>p{font-size:12px;color:var(--muted);margin:10px 0}
+.memory-account button{margin:12px 8px 0 0}.memory-account label{margin-top:13px}.memory-account .memory-message{margin:14px 0 20px;font-size:11px;color:#657b65}
+.memory-automatic{padding:18px 20px;background:#f6f8fd;border-radius:9px;margin:20px 0 8px;display:grid;grid-template-columns:1fr 1fr;column-gap:30px;align-items:center}
+.memory-automatic .memory-toggle{display:flex;align-items:center;gap:9px;margin:0;align-self:start;padding-top:4px;color:#3a4b67}.memory-automatic label{margin:0;font-size:11px;font-weight:400}
+.memory-automatic input[type=number]{max-width:120px;margin-top:6px;padding:6px 10px}.memory-automatic p{grid-column:1/-1;margin-top:12px;font-size:11px;color:var(--muted)}.memory-automatic small{grid-column:1/-1;color:#90651c;margin-top:8px}
+.memory-automatic button{justify-self:start;grid-column:1/-1;margin-top:12px;background:white;border-color:#d8e0eb;color:#53637b}
+.memory-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px}.memory-entry{min-width:0;padding:18px 0;border-top:1px solid var(--line)}.memory-entry small{display:block;font-size:11px;margin-bottom:8px}.memory-entry textarea{min-height:100px}.memory-entry button{padding:6px 12px;min-height:34px;font-size:11px;margin-top:10px}
+.memory-empty{font-size:12px;color:var(--muted);grid-column:1/-1}.memory-evidence{font-size:11px;color:var(--muted);margin-top:12px}.memory-evidence summary{cursor:pointer}.memory-evidence p{white-space:pre-wrap;margin-top:8px}.memory-evidence small{margin-top:8px}
+.memory-intro{max-width:76ch;color:var(--muted);font-size:12px;margin-bottom:20px}.memory-intro details{margin-top:10px}.memory-intro summary{cursor:pointer;color:#516583;font-size:11px}.memory-intro details p{padding-top:8px;line-height:1.9}#privateMemoryEmpty{margin-top:16px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.form-grid label{margin-top:0}.input-unit{display:flex;align-items:center;gap:10px}.input-unit input{max-width:160px}.input-unit span{font-size:12px;color:var(--muted);margin-top:7px}
+.lifecycle-list{margin:0;padding:0;list-style:none}.lifecycle-list li{padding:13px 0;border-bottom:1px solid var(--line)}.lifecycle-list li:last-child{border:0;padding-bottom:0}.lifecycle-list strong{display:block;color:#465772;font-size:12px;margin-bottom:3px;font-weight:550}
+.log-card{padding:24px}.log-card .section-heading{margin-bottom:16px}#logs{margin:0;min-height:260px;max-height:65vh;overflow:auto;background:#202c40;border-color:#202c40;color:#c8d5ec;line-height:2;font-size:11px}#logs:empty:before{content:"等待服务日志…";color:#94a5c2}
+.page-footer{font-size:11px;color:#93a0b3;margin-top:30px;display:flex;align-items:center;gap:7px}.page-footer .icon{width:13px;height:13px}noscript{display:block;padding:20px;text-align:center;color:#a44c28;background:#fff5e9}
+@media(min-width:1600px){main{padding-top:42px}.overview-grid{grid-template-columns:minmax(0,1fr) 280px}.connection-map{padding:24px 0 34px}}
+@media(max-width:1150px){.app-shell{grid-template-columns:196px minmax(0,1fr)}.sidebar{padding:26px 12px 20px}.brand{padding:0 6px}.brand strong{font-size:14px}.topbar{padding:0 26px}main{padding:28px 26px 40px}.overview-grid{grid-template-columns:minmax(0,1fr) 200px;gap:16px}.card{padding:22px}.settings-grid{grid-template-columns:1fr}.quick-actions{gap:10px}.quick-action{padding:17px 14px;gap:9px}.quick-action>.icon{width:17px}.memory-list{grid-template-columns:1fr}}
+@media(max-width:800px){.app-shell{display:block}.sidebar{height:auto;position:static;display:block;padding:18px 20px 0;border-right:0;border-bottom:1px solid var(--line)}.brand{padding:0}.brand strong{font-size:15px}.brand small{font-size:10px}.brand-mark{width:32px;height:32px}.nav-label,.sidebar-footer{display:none}.sidebar nav{display:flex;gap:4px;overflow-x:auto;margin:18px -20px 0;padding:0 12px 10px;scrollbar-width:thin}.nav-link{flex:none;padding:9px 12px;gap:7px;min-height:40px;font-size:12px}.nav-link .icon{width:16px;height:16px}.nav-link[aria-current=page]:after{display:none}.topbar{height:49px;padding:0 22px}.breadcrumb{font-size:11px;gap:8px}.history-link{font-size:11px}main{padding:26px 22px 35px}.page-header{margin-bottom:23px;align-items:flex-start}h1{font-size:25px}#pageDescription{font-size:12px;max-width:40ch}#connectionState{font-size:10px;margin-top:9px}.overview-grid{grid-template-columns:minmax(0,1fr) 180px;gap:14px}.resource-card{padding:22px 20px}.pair-layout{grid-template-columns:1fr;gap:24px}.quick-action{display:block;padding:18px}.quick-action>.icon{margin-bottom:9px}.result,.memory-account{padding:22px}}
+@media(max-width:560px){.sidebar{padding:16px 16px 0}.sidebar nav{margin-left:-16px;margin-right:-16px;padding-left:8px;padding-right:8px}.nav-link{padding:8px 10px}.topbar{padding:0 18px}.breadcrumb>span{display:none}main{padding:23px 16px 30px}.page-header{display:block}#connectionState{margin-top:13px}#pageDescription{font-size:12px;margin-top:6px}h1{font-size:24px}.overview-grid{grid-template-columns:1fr}.card{padding:21px}.section-heading{margin-bottom:18px}.section-heading small{font-size:10px}.connection-map{grid-template-columns:minmax(0,1fr) 48px minmax(0,1fr);padding-top:8px}.service-icon{width:50px;height:50px;border-radius:13px}.endpoint h3{font-size:14px}.endpoint p{font-size:10px}.connection-footer{gap:10px}.connection-footer p{font-size:10px;max-width:24ch}.resource-card{display:grid;grid-template-columns:1fr 1fr;padding:19px 22px;column-gap:24px}.resource-card h2{grid-column:1/-1;font-size:13px;margin-bottom:14px}.resource-stat{margin:0}.resource-stat strong{font-size:28px}.resource-card>p{margin:5px 0 0;font-size:10px}.resource-stat:nth-of-type(2){grid-column:2;grid-row:2}.resource-card>p:last-child{grid-column:2;grid-row:3}.resource-card hr{display:none}.quick-actions{grid-template-columns:1fr;gap:9px}.quick-action{display:flex;align-items:center;padding:16px 18px;gap:13px}.quick-action>.icon{margin:0;width:20px;height:20px}.quick-action small{margin-top:2px}.section-label{margin-top:25px}.disclosure{padding:0 17px}.form-grid{grid-template-columns:1fr;gap:20px}.memory-automatic{grid-template-columns:1fr;gap:14px;padding:16px}.memory-automatic p{margin:0}.memory-automatic input[type=number]{max-width:100%}.memory-automatic button{margin:0}.memory-account,.result{padding:20px}.memory-account button{max-width:100%}.result select{display:block;width:100%}.settings-grid{gap:16px}.log-card{padding:18px}.log-card .section-heading{display:block}.log-card .section-heading small{display:block;margin-top:5px}#logs{padding:14px;font-size:10px}.actions{gap:8px}.actions button{flex-grow:1}.page-footer{margin-top:23px;font-size:10px}}
+@media(prefers-reduced-motion:no-preference){button,a{transition:background-color .15s,border-color .15s,color .15s}}
+/* History shares the console shell; its account and session state stays local. */
+main:has(#history-panel:not([hidden])){max-width:1600px}
+.history-workspace{display:grid;grid-template-columns:238px minmax(0,1fr);background:white;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;min-height:620px}
+.history-rail{min-width:0;padding:22px 15px 17px;background:#f9fbfe;border-right:1px solid var(--line);display:flex;flex-direction:column}
+.rail-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 6px;margin-bottom:13px}.rail-heading h2{font-size:13px}.rail-heading small{font-size:10px;color:#8390a4}
+.sessions-heading{border-top:1px solid var(--line);padding-top:22px;margin-top:22px}
+#history-panel #users{display:flex;flex-wrap:wrap;gap:7px;padding:0 3px}
+#history-panel .user{background:white;color:#647189;border:1px solid #dfe6f1;padding:7px 12px;min-height:34px;font-size:11px;border-radius:6px;overflow-wrap:anywhere;max-width:100%}
+#history-panel .user.selected{background:var(--blue);color:white;border-color:var(--blue)}
+#history-panel #users[inert],#history-panel #sessions[inert]{pointer-events:none;user-select:none;opacity:.55}
+#history-panel #sessions{flex:1;min-height:180px;max-height:550px;overflow-y:auto;scrollbar-width:thin}
+#history-panel .session{display:block;width:100%;text-align:left;min-height:65px;padding:11px 13px;margin:3px 0 6px;color:#51617b;border:1px solid transparent;border-radius:7px;background:transparent;font-weight:450}
+#history-panel .session:hover{background:#f0f4fc}.session span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}.session small{display:block;font-size:10px;color:#8a96a8;margin-top:5px}
+#history-panel .session.selected{background:var(--blue-soft);color:var(--blue);border-color:#dbe4fb;box-shadow:inset 3px 0 0 #6a8be9}.session.selected small{color:#7b90bf}
+#history-panel #moreSessions{width:100%;margin-top:12px;min-height:34px;font-size:11px}
+.history-connection{color:#8b98ad;font-size:10px;padding:18px 6px 0;margin-top:auto;line-height:1.8;overflow-wrap:anywhere}
+.history-conversation{min-width:0;display:flex;flex-direction:column}
+.conversation-tools{padding:23px 25px 0}
+.history-conversation .titlebar{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:20px;min-width:0}
+.titlebar h2{font-size:18px;line-height:1.6;overflow-wrap:anywhere;min-width:0}.titlebar button{font-size:10px;padding:5px 10px;min-height:31px;flex:none}
+.rename-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:18px}.rename-form input{margin:0;flex:1;min-width:160px}.rename-form button{font-size:11px;min-height:36px}
+.history-conversation .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:15px;min-width:0}
+.history-conversation .history-search{position:relative;display:flex;align-items:center;flex:1;min-width:0;margin:0;font-weight:400}
+.history-search .icon{position:absolute;left:12px;width:17px;height:17px;color:#8c9bb4;pointer-events:none}
+.history-conversation #search{margin:0;padding-left:37px;font-size:12px;min-width:0;background:#f9fbfe;height:40px}
+.history-conversation #export{font-size:11px;padding:8px 12px;white-space:nowrap}.history-conversation #export .icon{width:15px;height:15px}
+.history-exported{padding:10px 12px;border-radius:7px;background:#edf7f1;color:#287250;font-size:11px;overflow-wrap:anywhere;margin-bottom:12px}
+.task-panel{margin:0 0 17px;border:1px solid var(--line);background:#fbfcff;border-radius:8px;padding:0 14px;font-size:11px}
+.task-panel>summary{padding:11px 0;color:#526681;font-size:11px;cursor:pointer}.task-panel>summary>span{font-size:10px;color:#92a0b4;margin-left:12px}
+.task-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 12px}.task-heading button{min-height:30px;padding:4px 9px;font-size:10px;white-space:nowrap}
+.task-note{font-size:10px;color:#8492a7;line-height:1.85}.task-panel #taskEmpty{padding:0 0 14px}
+.task-status{font-size:10px;line-height:1.9;color:#7a8aa1}.task-panel #taskDiagnostics{padding-bottom:10px}
+.task-error,.task-problem{font-size:11px;color:#b34a44;line-height:1.9}.task-error{padding-bottom:12px}.task-problem{margin-top:5px}
+.task-card{border-top:1px solid var(--line);padding:13px 0}.task-card>summary{cursor:pointer;overflow-wrap:anywhere}.task-title{font-size:12px;font-weight:550;color:#465976;margin-bottom:5px}
+.task-events{max-height:260px;overflow-y:auto;padding:0 0 0 22px;margin:13px 0 2px;font-size:10px;color:#7e8da4;line-height:2.1}.task-card button{font-size:10px;margin-top:8px}
+.history-feed{padding:5px 25px 22px;min-height:350px;max-height:58dvh;overflow:auto;overscroll-behavior:contain;flex:1;scrollbar-width:thin;scrollbar-color:#d2dbea transparent}
+.history-feed:focus-visible{outline-offset:-3px;border-radius:5px}
+.message{padding:15px 17px;margin:0 0 17px;max-width:94%;background:#f8fafc;border:1px solid #e7edf5;border-radius:10px;overflow-wrap:anywhere;content-visibility:auto;contain-intrinsic-size:auto 130px}
+.message.inbound{background:var(--blue-soft);border-color:#dfe7fa;margin-left:auto}.message.outbound{background:white;border-color:#e5ebf3}.message.error{border-color:#f0d3cf;background:#fff6f4}.message.assets{background:#f5f8fc}.message.result{border-style:dashed;background:#fafbfe}
+.message .meta{font-size:10px;color:#8693a8;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.message.inbound .meta{color:#7187b9}.message .copy{font-size:10px;min-height:25px;padding:1px 7px;color:#8492a7;border:1px solid #dfe5ee;background:transparent;border-radius:4px;margin-left:auto;white-space:nowrap}
+.message .copy:hover{color:var(--blue);border-color:#b9c9f4;background:white}.message .text{white-space:pre-wrap;font-size:14px;line-height:1.9;color:#3d4d65}
+.message .status{font-size:10px;color:#8a96a8;margin-top:10px;line-height:1.8}.message summary{cursor:pointer;color:#6b7f9f;font-size:11px}
+.attachment{margin-top:12px}.attachment button{padding:5px 10px;min-height:32px;font-size:10px;background:white;border-color:#dbe4f2;color:#607697;max-width:100%;overflow-wrap:anywhere}
+.attachment img,.attachment video{max-width:100%;max-height:350px;border-radius:8px;margin-top:10px}.attachment audio{width:100%;margin-top:10px}.attachment a{font-size:12px}
+.loading{display:flex;align-items:center;gap:9px;padding:17px 0;color:#8090aa;font-size:11px}
+.spinner{width:16px;height:16px;flex:none;border:2px solid #dce5fa;border-top-color:var(--blue);border-radius:50%;animation:history-spin .8s linear infinite}@keyframes history-spin{to{transform:rotate(360deg)}}
+.history-empty{padding:100px 20px;text-align:center;font-size:13px;color:#93a0b3;line-height:1.9}
+#newMessages{display:block;width:100%;padding:9px 14px;margin:0 0 17px;font-size:11px;background:var(--blue-soft);border-color:#dbe5fc;color:var(--blue)}
+.pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 23px;border-top:1px solid var(--line);margin-top:auto}
+#pageInfo{font-size:10px;color:#8b98ad;line-height:1.7}.page-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.page-controls button{padding:4px 9px;min-height:30px;font-size:10px}
+.page-controls label{display:flex;align-items:center;gap:5px;margin:0 0 0 7px;font-size:10px;color:#8b98ad;font-weight:400}.page-controls select{display:inline-block;width:auto;margin:0;padding:4px 5px;font-size:10px;border-radius:5px}
+@media(min-width:1600px){.history-workspace{grid-template-columns:270px minmax(0,1fr)}.conversation-tools{padding:26px 32px 0}.history-feed{padding:5px 32px 25px}.history-rail{padding:25px 18px 20px}.message .text{font-size:14px}}
+@media(max-width:1150px){.history-workspace{grid-template-columns:205px minmax(0,1fr)}.history-rail{padding:19px 12px 15px}.conversation-tools{padding:20px 19px 0}.history-feed{padding:5px 19px 20px}.pagination{padding:13px 19px}.history-conversation #export{padding:8px 10px}.history-conversation #export .icon{display:none}.task-panel>summary>span{display:none}}
+@media(max-width:950px){.history-workspace{grid-template-columns:180px minmax(0,1fr)}.history-rail{padding:18px 9px}.rail-heading{padding:0 4px}.rail-heading small{font-size:9px}.session span{font-size:11px}.session small{font-size:9px}.message{max-width:100%}.titlebar h2{font-size:16px}.pagination{gap:10px}.page-controls{gap:5px}.page-controls label{margin-left:3px}.history-conversation .toolbar{gap:7px}}
+@media(max-width:650px){.history-workspace{grid-template-columns:1fr;min-height:0}.history-rail{padding:18px 15px 13px;border-right:0;border-bottom:1px solid var(--line)}.rail-heading{margin-bottom:10px}.rail-heading h2{font-size:12px}.rail-heading small{font-size:10px}#history-panel #users{padding:0;gap:7px;flex-wrap:nowrap;overflow-x:auto}#history-panel .user{flex:none;font-size:11px}.sessions-heading{padding:0;border-top:0;margin:18px 0 8px}#history-panel #sessions{display:flex;flex:initial;overflow-x:auto;min-height:0;max-height:none;gap:8px;padding-bottom:2px}#history-panel .session{min-width:155px;max-width:190px;margin:0 0 3px;min-height:63px;padding:10px 12px;background:white;border-color:var(--line)}#history-panel #moreSessions{margin-top:7px;min-height:30px}.session span{font-size:11px}.session small{font-size:10px}.history-connection{font-size:9px;padding:8px 1px 0;margin:0}.conversation-tools{padding:19px 17px 0}.history-conversation .titlebar{margin-bottom:15px}.titlebar h2{font-size:16px}.history-conversation #search{font-size:11px;height:37px;padding-left:32px}.history-search .icon{width:15px;height:15px;left:10px}.history-conversation #export{font-size:10px;padding:7px 10px;min-height:37px}.task-panel{padding:0 11px;margin-bottom:13px}.history-feed{padding:3px 16px 20px;min-height:350px;max-height:65dvh}.message{padding:13px 14px;margin-bottom:14px}.message .text{font-size:12px;line-height:1.9}.message .meta{font-size:9px;gap:6px;margin-bottom:9px}.message .copy{font-size:9px}.pagination{padding:12px 16px;display:block}#pageInfo{display:block;margin-bottom:9px}.page-controls{justify-content:space-between;gap:5px}.page-controls button{min-height:32px;padding:4px 11px}.page-controls label{margin-left:auto}.history-empty{padding:70px 14px}}
+@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
+@media(max-width:650px){.message .text{font-size:13px}}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主内容</a>
+<svg width="0" height="0" aria-hidden="true" style="position:absolute;overflow:hidden">
+<defs>
+<symbol id="i-bridge" viewBox="0 0 24 24"><path d="M7 8h10M7 16h10M8 8v8m8-8v8"/><rect x="3" y="5" width="5" height="14" rx="2"/><rect x="16" y="5" width="5" height="14" rx="2"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4m-6 6-1 1a4.2 4.2 0 0 1-6-6l4-4a4.2 4.2 0 0 1 6 0m2 2 1-1a4.2 4.2 0 0 1 6 6l-4 4a4.2 4.2 0 0 1-6 0" transform="translate(1 1)"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-2a6.5 6.5 0 0 1 13 0v2M17 4.7a3.5 3.5 0 0 1 0 6.6m2 3a5 5 0 0 1 2.5 4.4V20"/></symbol>
+<symbol id="i-memory" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v18M3 7h4m-4 5h4m-4 5h4m6-9h3m-3 4h3m-3 4h3"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 10 5-10 5L2 8l10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3m7 0h5"/></symbol>
+<symbol id="i-history" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7m2-4v5l3 2"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11a8.5 8.5 0 0 1-8.5 8.5H6L2 22v-7A8.5 8.5 0 1 1 21 11Z"/><path d="M7 10h9m-9 4h6"/></symbol>
+<symbol id="i-code" viewBox="0 0 24 24"><path d="m7 6-6 6 6 6m10-12 6 6-6 6m-3-16-4 20"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+</defs>
+</svg>
+<div class="app-shell">
+<aside class="sidebar" aria-label="控制台导航">
+<a class="brand" href="#overview" data-panel-link><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-bridge"/></svg></span><span><strong>QQ Codex Bridge</strong><small>本机管理控制台</small></span></a>
+<p class="nav-label">工作空间</p>
+<nav aria-label="管理分区">
+<a class="nav-link" href="#overview" data-panel-link aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>运行概览</a>
+<a class="nav-link" href="#history-panel" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>消息历史</a>
+<a class="nav-link" href="#bot" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>机器人连接</a>
+<a class="nav-link" href="#accounts" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>账号管理</a>
+<a class="nav-link" href="#memory" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-memory"/></svg>记忆管理</a>
+<a class="nav-link" href="#lifecycle" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>会话策略</a>
+<a class="nav-link" href="#logs-panel" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>服务日志</a>
+</nav>
+<div class="sidebar-footer"><p><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>仅限本机访问</p><small>凭据与账号数据保存在本机<br>服务运行期间请保持电脑开机</small></div>
+</aside>
+<div class="workspace">
+<header class="topbar"><div class="breadcrumb"><span>工作空间</span><span aria-hidden="true">/</span><strong>管理控制台</strong></div><span class="history-link"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>本机工作空间</span></header>
+<main id="main">
+<div class="page-header"><div><h1 id="pageTitle" tabindex="-1">运行概览</h1><p id="pageDescription">查看 QQ、Codex 与账号的当前状态。</p></div><p id="connectionState" role="status">正在连接本机页面…</p></div>
+<p id="notice" role="status" aria-live="polite"></p>
+<section id="overview" class="panel" data-panel aria-label="运行概览">
+<div class="overview-grid">
+<div class="surface card">
+<div class="section-heading"><h2>服务连接</h2><small>QQ 与本机 Codex 的桥梁</small></div>
+<div class="connection-map">
+<div class="endpoint"><span class="service-icon"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></span><h3>QQ 机器人</h3><p>接收消息与投递结果</p><span id="qqState" class="status-pill" role="status">读取中</span></div>
+<div class="bridge-line" aria-hidden="true"><svg class="icon"><use href="#i-bridge"/></svg></div>
+<div class="endpoint"><span class="service-icon codex"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg></span><h3>本机 Codex</h3><p>使用独立账号进程执行</p><span id="codexState" class="status-pill" role="status">读取中</span></div>
+</div>
+<div class="connection-footer"><p>连接状态每 5 秒自动刷新</p><a class="text-link" href="#bot" data-panel-link>管理连接<svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a></div>
+</div>
+<div class="surface resource-card"><h2>账号与会话</h2><div class="resource-stat"><strong id="accountCount">—</strong><span>已绑定账号</span></div><p>每个账号独立配置与记忆</p><hr><div class="resource-stat"><strong id="sessionCount">—</strong><span>会话</span></div><p>当前账号进程中的会话</p></div>
+</div>
+<div class="section-label"><h2>常用管理</h2><small>选择一个工作区</small></div>
+<div class="quick-actions">
+<a class="quick-action" href="#accounts" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-users"/></svg><span><strong>添加与管理账号</strong><small>配对 QQ、分配目录和模型</small></span></a>
+<a class="quick-action" href="#memory" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-memory"/></svg><span><strong>整理长期记忆</strong><small>共同规则与账号独立偏好</small></span></a>
+<a class="quick-action" href="#history-panel" data-panel-link><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg><span><strong>查看消息历史</strong><small>回看对话、任务与执行结果</small></span></a>
+</div>
+<details class="surface disclosure"><summary>详细连接状态</summary><pre id="status">加载中…</pre></details>
+</section>
+<section id="bot" class="panel" data-panel aria-label="机器人连接">
+<div class="settings-grid">
+<div class="surface card"><h2>QQ 机器人凭据</h2><p class="card-intro">填写专用机器人的凭据，保存后连接 QQ。</p>
+<form id="form">
+<label for="appId">机器人 AppID</label><input id="appId" autocomplete="off" inputmode="numeric" placeholder="输入 QQ 开放平台的 AppID" required>
+<label for="clientSecret">AppSecret / ClientSecret</label><input id="clientSecret" type="password" autocomplete="new-password" placeholder="已保存后可留空" aria-describedby="secretHelp"><small id="secretHelp" class="field-help">凭据只保存在本机，不会显示在聊天回复中。</small>
+<label class="check-field"><input id="sandbox" type="checkbox"><span>使用 QQ 沙箱接口<small class="field-help">按 QQ 开放平台当前测试环境选择</small></span></label>
+<div class="actions"><button type="submit">保存并连接 QQ</button><button type="button" id="reconnect" class="secondary">重新连接 Codex</button></div>
+</form></div>
+<div class="surface card"><h2>QQ 指令面板</h2><p id="commands" role="status">等待同步…</p><button type="button" id="syncCommands" class="secondary">同步 QQ 指令列表</button>
+<div class="subsection"><h3>从 QQ 开始操作</h3><p>连接后会自动核对指令面板。在 QQ 对话中打开指令列表，即可选择常用操作。</p><p style="margin-top:12px"><code>/buttons</code> 打开原生按钮菜单<br><code>/media-test</code> 检查文件、图片与音频回传</p></div></div>
+</div>
+</section>
+<section id="accounts" class="panel" data-panel aria-label="账号管理">
+<div class="surface card"><h2>添加 QQ 账号</h2><p class="card-intro">生成专属配对码，再由对应账号在 QQ 私聊机器人完成绑定。</p>
+<div class="pair-layout"><div><label for="userLabel">账号备注</label><input id="userLabel" placeholder="例如：主账号、工作账号"><div class="actions"><button type="button" id="pairButton">生成一次性配对码</button></div><div id="pair" aria-live="polite"></div></div><div class="help-note"><h3>如何配对</h3><p>使用要绑定的 QQ 账号，私聊机器人并发送生成的配对指令。配对码一小时内有效，使用后失效。</p><p>每个账号拥有独立的进程、会话、审批、记忆与工作目录。</p></div></div>
+</div>
+<div class="section-label"><h2>已绑定账号与本机结果</h2><small>目录与模型按账号生效</small></div>
+<p id="accountsEmpty" class="empty-state" hidden>还没有已绑定账号。先在上方生成配对码，再到 QQ 完成绑定。</p><div id="results"></div>
+<details class="surface disclosure"><summary>QQ 常用指令与附件说明</summary><div class="help-note" style="margin-bottom:18px"><p><code>/help</code> 帮助　<code>/status</code> 状态　<code>/result</code> 结果　<code>/stop</code> 停止　<code>/new</code> 新会话</p><p><code>/project 绝对路径</code> 切换目录，<code>/file 绝对路径</code> 回传文件，<code>/voice 文字</code> 生成语音。审批通过原生按钮，或使用 <code>/approve 编号</code>、<code>/deny 编号</code>。</p><p>绑定后可直接发文字、图片、语音、视频或文件。图片直接传入模型；语音转写后执行；视频抽样分析画面和音轨；文件保存后读取。附件是否被接受以 QQ 接口与实际处理结果为准。</p></div></details>
+</section>
+<section id="memory" class="panel" data-panel aria-label="记忆管理">
+<div class="surface card"><h2>全局记忆</h2><p class="card-intro">所有授权账号共同遵循的规则。账号私有内容不会自动加入这里。</p><label for="globalMemory">共同规则</label><textarea id="globalMemory" rows="5" maxlength="4000" placeholder="例如：默认使用中文回复；执行操作后说明验证结果。"></textarea><div class="actions"><button id="saveMemory" type="button">保存全局记忆</button><small>从下一次任务起加载</small></div></div>
+<div class="section-label"><h2>账号独立记忆</h2><small>仅对应账号可读取</small></div>
+<div class="memory-intro"><p>分别管理各账号的长期偏好与经验。这里与 QQ 的 <code>/memory</code>、<code>/remember</code>、<code>/forget</code> 使用同一份记忆。</p><details><summary>自动学习与草稿保存说明</summary><p>开启自动记忆后，会提炼长期偏好和经验，并按完成轮数定期回顾最近对话。这里同时展示自动保存和手动添加的记忆，不会一次性导入全部旧历史。页面自动更新状态时会保留编辑中的草稿；QQ 修改后请刷新对应账号的记忆。聊天历史、当前上下文及交接摘要可在消息历史或 <code>/context</code> 查看。</p></details></div>
+<p id="privateMemoryEmpty" class="empty-state">绑定账号后，可在这里分别管理独立记忆。</p><div id="privateMemories"></div>
+</section>
+<section id="lifecycle" class="panel" data-panel aria-label="会话策略">
+<div class="settings-grid">
+<div class="surface card"><h2>自动会话轮换</h2><p class="card-intro">达到轮数或空闲时间后，在下次任务开始时创建新会话。</p>
+<div class="form-grid"><label for="rotationTurns">会话最多轮数<span class="input-unit"><input id="rotationTurns" type="number" min="5" max="200" value="40"><span>轮</span></span><small class="field-help">可设置 5–200 轮</small></label><label for="idleHours">空闲后换会话<span class="input-unit"><input id="idleHours" type="number" min="1" max="72" value="6"><span>小时</span></span><small class="field-help">可设置 1–72 小时</small></label></div><div class="actions"><button id="saveLifecycle" type="button">保存会话策略</button></div></div>
+<div class="help-note"><h3>会话如何保持连贯</h3><ul class="lifecycle-list"><li><strong>长上下文自动压缩</strong>Codex 按模型默认阈值处理长上下文。</li><li><strong>新会话携带必要信息</strong>保留最近三轮简短摘要、全局记忆和账号记忆。</li><li><strong>正在执行的任务继续运行</strong>轮换不会自动切断当前任务。</li></ul><p style="margin-top:18px">QQ 使用 <code>/context</code> 查看状态，<code>/new</code> 手动创建新会话。</p></div>
+</div>
+</section>
+<section id="logs-panel" class="panel" data-panel aria-label="服务日志"><div class="surface log-card"><div class="section-heading"><h2>最近服务事件</h2><small>随连接状态自动更新，最多保留最近 50 条</small></div><pre id="logs" aria-label="服务日志内容"></pre></div></section>
+<section id="history-panel" class="panel" data-panel aria-label="消息历史" hidden><!-- HISTORY_WORKSPACE --></section>
+<footer class="page-footer"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>本机服务 · QQ Codex Bridge</footer>
+</main>
+</div>
+</div>
+<noscript>页面需要启用 JavaScript 才能读取本机服务。</noscript>
+<script src="/ui-client.js"></script>
+<script src="/history.js"></script>
+<script src="/setup.js"></script>
+</body>
+</html>

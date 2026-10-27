@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
+import { resolveCodexBinary } from './codex-binary.mjs';
 
 export class CodexRPC extends EventEmitter {
   constructor(binary = 'codex', extraEnv = {}) { super(); this.binary = binary; this.extraEnv=extraEnv; this.pending = new Map(); this.nextId = 1; }
   async start() {
+    this.binary = resolveCodexBinary(this.binary);
     this.child = spawn(this.binary, ['app-server', '--stdio'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env:{...process.env,...this.extraEnv} });
     this.child.on('error', e => this.fail(e));
     this.child.on('exit', code => this.fail(new Error(`Codex 已退出 (${code})`)));

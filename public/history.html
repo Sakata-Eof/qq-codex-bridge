@@ -1,6 +1,40 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QQ Codex · 消息历史</title><style>
-.loading{display:flex;align-items:center;gap:10px;padding:18px 0}.spinner{width:20px;height:20px;flex:none;border:3px solid #d5e3d8;border-top-color:#20593e;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
-#users[inert],#sessions[inert]{pointer-events:none;user-select:none}
-.task-panel{margin:14px 0;border:1px solid #dbe2d9;border-radius:10px;padding:12px;background:#fff}.task-panel>summary{cursor:pointer;font-weight:600}.task-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0}.task-card{border-top:1px solid #e3e8e0;padding:10px 0}.task-card>summary{cursor:pointer;overflow-wrap:anywhere}.task-title{font-weight:600}.task-status{font-size:13px;color:#59685e}.task-problem,.task-error{color:#9a3b2f}.task-events{padding-left:23px;font-size:13px;max-height:320px;overflow:auto}.task-note{font-size:12px;color:#6e7c71}
-:root{font:15px/1.6 system-ui;color:#203029;background:#f5f6f3}*{box-sizing:border-box}body{margin:0}header{padding:18px 28px;border-bottom:1px solid #ddd;background:#fff;display:flex;justify-content:space-between;align-items:center}h1{font-size:22px;margin:0}h2{font-size:18px;margin:0}h3{font-size:13px;color:#6e7c71;margin:20px 0 8px}a{color:#1e674a}main{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1250px;margin:auto;min-height:85vh}aside{padding:16px 12px;border-right:1px solid #ddd}button,input,select{font:inherit}button{cursor:pointer;border:1px solid #d5ddd5;border-radius:8px;padding:8px 12px;background:#fff;color:inherit}button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}.user,.session{display:block;width:100%;text-align:left;margin:8px 0}.user.selected,.session.selected{background:#20593e;color:white}.session span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session small{display:block;font-size:11px;opacity:.75}.content{padding:24px;min-width:0}.toolbar,.pagination,.titlebar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.titlebar{margin:14px 0}.titlebar h2{flex:1;word-break:break-word}.toolbar{position:sticky;top:0;background:#f5f6f3;padding:10px 0;z-index:2}.toolbar input{flex:1;min-width:150px;padding:9px;border:1px solid #ccc;border-radius:8px}.pagination{font-size:13px;padding:10px 0}.message{border:1px solid #dbe2d9;border-radius:12px;padding:16px 18px;margin:16px 0;max-width:92%;background:#fff;word-break:break-word;content-visibility:auto;contain-intrinsic-size:auto 130px}.message.outbound{background:#edf5ec;margin-left:auto}.message.error{border-color:#db988f;background:#fff0ed}.message.assets{background:#f5f3e9}.meta{font-size:12px;color:#6e7c71;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.copy{font-size:12px;padding:3px 10px;margin-left:auto;white-space:nowrap}.text{white-space:pre-wrap}.attachment{margin-top:12px}.attachment button{font-size:13px}.attachment img,.attachment video{max-width:100%;max-height:350px;border-radius:8px;margin-top:10px}.attachment audio{width:100%;margin-top:10px}.status{color:#59685e;font-size:13px}#empty{padding:60px 0;text-align:center;color:#788477}#renameForm input{width:70%;padding:8px;border:1px solid #ccc;border-radius:8px}#newMessages{background:#e6f1e4;margin:10px 0}#sessionTitle{font-weight:600}@media(max-width:700px){main{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #ddd;padding:8px}#users,#sessions{display:flex;overflow:auto;gap:8px}.user,.session{min-width:160px;max-width:220px}.content{padding:12px}.message{max-width:100%}}</style>
-<header><h1>QQ Codex · 消息历史</h1><a href="/">机器人配置</a></header><main><aside><h3>账号</h3><div id="users"></div><h3>独立会话</h3><div id="sessions"></div><button id="moreSessions" hidden>更早的会话</button></aside><section class="content"><div class="status" id="state">正在读取连接状态…</div><details id="taskPanel" class="task-panel"><summary>账号最近任务</summary><div class="task-heading"><span class="task-note">仅查看此账号的任务状态，不改变当前会话</span><button id="taskRefresh" type="button">刷新任务</button></div><div id="taskDiagnostics" class="task-status" aria-live="polite"></div><div id="taskLoading" class="status loading" role="status" hidden><span class="spinner" aria-hidden="true"></span><span>正在读取任务状态…</span></div><div id="taskError" class="task-error" role="status" hidden></div><div id="taskEmpty" class="task-note">展开后读取；升级后的新任务会在这里记录</div><div id="taskList"></div></details><div class="titlebar"><h2 id="sessionTitle">请选择会话</h2><button id="rename" hidden>修改标题</button></div><form id="renameForm" hidden><input id="titleInput" maxlength="80" aria-label="会话标题" required><button>保存标题</button><button type="button" id="cancelRename">取消</button></form><div class="toolbar"><input id="search" aria-label="搜索本会话" placeholder="搜索当前会话的消息"><button id="export">导出本会话</button></div><div class="status" id="exported" hidden></div><div class="pagination"><button id="newer" disabled>较新一页</button><span id="pageInfo">0 条消息</span><button id="older" disabled>更早一页</button><button id="latest">最新</button><label>每页 <select id="pageSize" aria-label="每页条数"><option>20</option><option selected>30</option><option>50</option><option>100</option></select> 条</label></div><div id="loading" class="status loading" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span>正在加载会话消息…</span></div><button id="newMessages" hidden></button><div id="messages"></div><div id="empty">请选择账号与会话</div></section></main><noscript>页面需要启用 JavaScript 才能读取本机服务。</noscript><script src="/ui-client.js"></script><script src="/history.js"></script></html>
+<div class="history-workspace">
+  <aside class="history-rail" aria-label="历史账号与会话">
+    <div class="rail-heading"><h2>账号</h2><small>独立记录</small></div>
+    <div id="users" aria-label="选择历史账号"></div>
+    <div class="rail-heading sessions-heading"><h2>会话</h2><small>按最近活动</small></div>
+    <div id="sessions" aria-label="选择历史会话"></div>
+    <button id="moreSessions" class="secondary" type="button" hidden>加载更早的会话</button>
+    <p class="history-connection" id="state" role="status">正在读取连接状态…</p>
+  </aside>
+  <section class="history-conversation" aria-label="会话消息">
+    <div class="conversation-tools">
+      <div class="titlebar"><h2 id="sessionTitle">请选择会话</h2><button id="rename" class="secondary" type="button" hidden>修改标题</button></div>
+      <form id="renameForm" class="rename-form" hidden><input id="titleInput" maxlength="80" aria-label="会话标题" required><button type="submit">保存标题</button><button class="secondary" type="button" id="cancelRename">取消</button></form>
+      <div class="toolbar">
+        <label class="history-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input id="search" aria-label="搜索本会话" placeholder="搜索当前会话的消息"></label>
+        <button id="export" class="secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>导出会话</button>
+      </div>
+      <div class="history-exported" id="exported" role="status" hidden></div>
+      <details id="taskPanel" class="task-panel">
+        <summary>账号最近任务<span>执行与投递状态</span></summary>
+        <div class="task-heading"><span class="task-note">查看此账号最近的任务，不改变当前会话</span><button id="taskRefresh" class="secondary" type="button">刷新任务</button></div>
+        <div id="taskDiagnostics" class="task-status" aria-live="polite"></div>
+        <div id="taskLoading" class="status loading" role="status" hidden><span class="spinner" aria-hidden="true"></span><span>正在读取任务状态…</span></div>
+        <div id="taskError" class="task-error" role="status" hidden></div>
+        <div id="taskEmpty" class="task-note">展开后读取；升级后的新任务会在这里记录</div>
+        <div id="taskList"></div>
+      </details>
+    </div>
+    <div id="historyFeed" class="history-feed" tabindex="0" aria-label="消息记录">
+      <div id="loading" class="status loading" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span>正在加载会话消息…</span></div>
+      <button id="newMessages" type="button" hidden></button>
+      <div id="messages"></div>
+      <div id="empty" class="history-empty">请选择账号与会话</div>
+    </div>
+    <div class="pagination">
+      <span id="pageInfo">0 条消息</span>
+      <div class="page-controls"><button id="newer" class="secondary" type="button" disabled aria-label="较新一页">较新</button><button id="older" class="secondary" type="button" disabled aria-label="更早一页">更早</button><button id="latest" class="secondary" type="button">最新</button><label>每页 <select id="pageSize" aria-label="每页条数"><option>20</option><option selected>30</option><option>50</option><option>100</option></select></label></div>
+    </div>
+  </section>
+</div>

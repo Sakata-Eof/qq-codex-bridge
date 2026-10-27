@@ -13,8 +13,8 @@ if (Test-Path -LiteralPath $pidFile) {
     if ($candidate -and $candidate.CommandLine -and $candidate.CommandLine.Contains((Join-Path $bridgeRoot 'server.mjs'))) { $running = $candidate }
 }
 if (-not $running -and -not $autostart) {
-    $nodePath = (Get-Command node -ErrorAction Stop).Source
-    Start-Process -FilePath $nodePath -ArgumentList ('"' + (Join-Path $bridgeRoot 'server.mjs') + '"') -WorkingDirectory $bridgeRoot -WindowStyle Hidden
+    $launcherPath = & (Join-Path $bridgeRoot 'scripts\ops\Build-WindowsLauncher.ps1')
+    Start-Process -FilePath $launcherPath -ArgumentList 'watchdog' -WorkingDirectory $bridgeRoot -WindowStyle Hidden
     $ready = $false
     for ($i=0; $i -lt 30; $i++) {
         Start-Sleep -Milliseconds 300

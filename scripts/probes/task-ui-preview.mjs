@@ -49,16 +49,38 @@ function respond(res, status, data) {
   res.end(JSON.stringify(data));
 }
 let historyRoutes, taskRoutes;
-const assets = new Map([['/history', ['history.html', 'text/html']], ['/history.js', ['history.js', 'text/javascript']], ['/ui-client.js', ['ui-client.js', 'text/javascript']]]);
+const assets = new Map([
+  ['/', ['setup.html', 'text/html']], ['/history', ['setup.html', 'text/html']],
+  ['/setup.js', ['setup.js', 'text/javascript']], ['/history.js', ['history.js', 'text/javascript']],
+  ['/ui-client.js', ['ui-client.js', 'text/javascript']],
+]);
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method !== 'GET') return respond(res, 405, { error: '演示实例只允许读取' });
-    if (req.url === '/api/session' || req.url === '/health') return respond(res, 200, { ok: true, mode: 'offline-preview' });
-    if (assets.has(req.url)) {
-      const [name, type] = assets.get(req.url);
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname === '/api/session' || url.pathname === '/health') return respond(res, 200, { ok: true, mode: 'offline-preview' });
+    if (assets.has(url.pathname)) {
+      const [name, type] = assets.get(url.pathname);
       res.writeHead(200, { 'Content-Type': type + ';charset=utf-8', 'Cache-Control': 'no-store' });
-      const content = fs.readFileSync(path.join(publicDir, name));
-      return res.end(name === 'history.html' ? content.toString('utf8').replace('<title>QQ Codex · 消息历史</title>', '<title>QQ Codex · 离线任务演示</title>').replace('<h1>QQ Codex · 消息历史</h1>', '<h1>QQ Codex · 离线任务演示</h1>') : content);
+      let content = fs.readFileSync(path.join(publicDir, name), 'utf8');
+      if (name === 'setup.html') content = content
+        .replace('<!-- HISTORY_WORKSPACE -->', fs.readFileSync(path.join(publicDir, 'history.html'), 'utf8'))
+        .replace(/<title>[^<]*<\/title>/, '<title>QQ Codex · 离线任务演示</title>');
+      return res.end(content);
+    }
+    if (url.pathname === '/api/status') return respond(res, 200, {
+      appId: config.appId, secretConfigured: false, sandbox: false, pairingCodes: [],
+      qq: '未配置', codex: 'Codex 尚未登录', commands: { ok: false, message: '离线演示不连接 QQ 或模型' },
+      users: config.users.map(user => ({ id: user.id, label: user.label, workspace: user.workspace,
+        process: null, sessions: [], model: { model: null, effort: null, inherited: true } })),
+      globalMemory: '', rotationTurns: 40, idleHours: 6,
+      multimodal: '仅展示合成任务与历史；不执行真实任务，也不读取生产数据',
+      logs: ['离线任务预览已启动；管理页仅供查看，不保存任何配置。'],
+    });
+    if (url.pathname === '/api/memory/private') {
+      const user = config.users.find(user => user.id === url.searchParams.get('user'));
+      if (!user) return respond(res, 400, { error: '演示账号不存在' });
+      return respond(res, 200, { user: user.id, revision: 'offline-empty', entries: [], automatic: { enabled: false, reviewEveryTurns: 10 } });
     }
     if (await taskRoutes(req, res) || await historyRoutes(req, res)) return;
     respond(res, 404, { error: '演示接口不存在' });

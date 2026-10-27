@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { projectRoot, runtimeDir, publicDir, defaultUsersRoot, verificationDir } from './paths.mjs';
 import { execFileSync } from 'node:child_process';
 import { CodexRPC } from './core/codex.mjs';
+import { resolveCodexBinary } from './core/codex-binary.mjs';
 import { Accounts } from './core/accounts.mjs';
 import { QQ } from './qq/client.mjs';
 import { Memory } from './core/memory.mjs';
@@ -12,6 +13,7 @@ import { History } from './history/store.mjs';
 import { TaskStore } from './history/task-store.mjs';
 import { createHistoryRoutes } from './http/history-routes.mjs';
 import { createTaskRoutes } from './http/task-routes.mjs';
+import { createMemoryRoutes } from './http/memory-routes.mjs';
 import { syncCommands, syncQuickMenu } from './qq/commands.mjs';
 import { authorizeUI, browserCookie } from './http/auth.mjs';
 import { ReleaseNotifications } from './ops/release-notifications.mjs';
@@ -20,11 +22,7 @@ const configFile=path.join(runtime,'config.json');
 const defaults={appId:'',clientSecret:'',users:[],pairingCodes:[],usersRoot:defaultUsersRoot,sandbox:false,qqProxy:'',codexBinary:'codex',adminToken:crypto.randomBytes(32).toString('hex'),python:'C:\\Users\\32979\\AppData\\Local\\Programs\\Python\\Python310\\python.exe',whisperModel:'C:\\Users\\32979\\.cache\\huggingface\\hub\\models--Systran--faster-whisper-small\\snapshots\\536b0662742c02347bc0e980a01041f333bce120',ffmpeg:'ffmpeg',ffprobe:'ffprobe',bridgeDir:dir};
 const config=fs.existsSync(configFile)?{...defaults,...JSON.parse(fs.readFileSync(configFile,'utf8'))}:defaults;
 config.rotationTurns ||= 40;config.idleHours ||= 6;
-if(!path.isAbsolute(config.codexBinary)||!fs.existsSync(config.codexBinary)){
-  const binRoot=path.join(process.env.LOCALAPPDATA,'OpenAI/Codex/bin');
-  const candidates=fs.existsSync(binRoot)?fs.readdirSync(binRoot).map(x=>path.join(binRoot,x,'codex.exe')).filter(x=>fs.existsSync(x)).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs):[];
-  if(candidates.length)config.codexBinary=candidates[0];
-}
+config.codexBinary=resolveCodexBinary(config.codexBinary);
 if(fs.existsSync(path.join(runtime,'asr-venv/Scripts/python.exe')))config.python=path.join(runtime,'asr-venv/Scripts/python.exe');
 function persist(){fs.writeFileSync(configFile+'.tmp',JSON.stringify(config,null,2),{mode:0o600});fs.renameSync(configFile+'.tmp',configFile);}
 persist();
@@ -57,20 +55,22 @@ let codexState='正在检查';
 async function checkCodex(){const rpc=new CodexRPC(config.codexBinary);try{await rpc.start();const r=await rpc.call('account/read',{refreshToken:false});codexState=r.account?'已登录；每个 QQ 账号独立启动 Codex 进程':'Codex 尚未登录';log(codexState);}catch(e){codexState=e.message;log(`Codex 检查失败：${e.message}`);}finally{rpc.stop();}}
 qq.on('message',e=>{void accounts.handle(e).catch(err=>{log(`指令处理失败：${err.message}`);if(config.users.some(u=>u.id===e.user)){history.record(e.user,{kind:'error',messageId:e.id,threadId:e.historyThreadId,text:err.message});void qq.send(e,`任务处理失败：${err.message}`).catch(()=>{});}});});
 const host='127.0.0.1',port=Number(process.env.QQ_CODEX_PORT||17329),base=`http://${host}:${port}`;
-const html=fs.readFileSync(path.join(publicDir,'setup.html')),js=fs.readFileSync(path.join(publicDir,'setup.js'));
-const historyHTML=fs.readFileSync(path.join(publicDir,'history.html')),historyJS=fs.readFileSync(path.join(publicDir,'history.js'));
+const historyPanel=fs.readFileSync(path.join(publicDir,'history.html'),'utf8');
+const html=Buffer.from(fs.readFileSync(path.join(publicDir,'setup.html'),'utf8').replace('<!-- HISTORY_WORKSPACE -->',historyPanel)),js=fs.readFileSync(path.join(publicDir,'setup.js'));
+const historyJS=fs.readFileSync(path.join(publicDir,'history.js'));
 const uiClient=fs.readFileSync(path.join(publicDir,'ui-client.js'));
 function respond(res,code,data){res.writeHead(code,{'Content-Type':'application/json;charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
 async function body(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>8192)throw new Error('请求过长');}return JSON.parse(text||'{}');}
 const historyRoutes=createHistoryRoutes({config,accounts,history,qq,base,respond,body});
 const taskRoutes=createTaskRoutes({config,tasks,accounts,qq,base,respond});
+const memoryRoutes=createMemoryRoutes({config,accounts,base,respond,body});
 const server=http.createServer(async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
   if(req.headers.host!==`${host}:${port}`||(req.headers.origin&&req.headers.origin!==base)){respond(res,403,{error:'仅允许本机访问'});return;}
   res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'unsafe-inline'; img-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'; form-action 'self'");
   if(req.method==='GET'&&req.url==='/'){res.setHeader('Content-Type','text/html;charset=utf-8');res.end(html);return;}
   if(req.method==='GET'&&req.url==='/setup.js'){res.setHeader('Content-Type','text/javascript;charset=utf-8');res.end(js);return;}
-  if(req.method==='GET'&&req.url==='/history'){res.setHeader('Content-Type','text/html;charset=utf-8');res.end(historyHTML);return;}
+  if(req.method==='GET'&&req.url==='/history'){res.setHeader('Content-Type','text/html;charset=utf-8');res.end(html);return;}
   if(req.method==='GET'&&req.url==='/history.js'){res.setHeader('Content-Type','text/javascript;charset=utf-8');res.end(historyJS);return;}
   if(req.method==='GET'&&req.url==='/ui-client.js'){res.setHeader('Content-Type','text/javascript;charset=utf-8');res.end(uiClient);return;}
   if(req.method==='GET'&&req.url==='/health'){respond(res,200,{ok:true});return;}
@@ -90,6 +90,7 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method==='POST'&&req.url==='/api/commands/sync'){respond(res,200,await synchronizeCommands());return;}
     if(await taskRoutes(req,res))return;
+    if(await memoryRoutes(req,res))return;
     if(await historyRoutes(req,res))return;
     if(req.method==='GET'&&req.url==='/api/status'){
       respond(res,200,{appId:config.appId,secretConfigured:Boolean(config.clientSecret),pairingCodes:config.pairingCodes.filter(p=>p.expires>Date.now()).map(p=>({label:p.label,command:`/pair ${p.pin}`})),sandbox:config.sandbox,qq:qq.state,codex:codexState,commands:commandsState,logs,users:accounts.status(),globalMemory:globalMemory.read(globalMemory.globalFile).map(x=>x.text).join('\n'),rotationTurns:config.rotationTurns,idleHours:config.idleHours,multimodal:'图片直接输入；语音 QQ ASR 或本地 whisper；视频抽样画面与音轨；文件读取与富媒体返回'});return;
