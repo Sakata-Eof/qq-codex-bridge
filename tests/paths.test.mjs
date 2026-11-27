@@ -32,11 +32,11 @@ test('central paths resolve from the package root rather than the process workin
   assert.equal(JSON.parse(output).projectRoot, projectRoot);
 });
 
-test('moving source preserves runtime, export, account and probe data locations', () => {
+test('new account workspaces stay inside the project and outside private runtime data', () => {
   assert.equal(runtimeDir, path.join(projectRoot, 'runtime'));
   assert.equal(exportsDir, path.join(projectRoot, 'exports'));
   assert.equal(verificationDir, path.join(exportsDir, 'verification', 'reports'));
-  assert.equal(defaultUsersRoot, path.resolve(projectRoot, '../../work/qq-users'));
+  assert.equal(defaultUsersRoot, path.join(projectRoot, 'work', 'qq-users'));
   assert.equal(probeWorkspaceDir, path.resolve(projectRoot, '../../work/probe'));
 });
 

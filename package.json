@@ -4,8 +4,12 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node server.mjs",
+    "check:env": "node scripts/ops/check-environment.mjs",
     "check": "node scripts/check.mjs",
     "benchmark": "node scripts/benchmarks/performance.mjs",
     "preview:tasks": "node scripts/probes/task-ui-preview.mjs",

@@ -1,5 +1,7 @@
 ﻿$ErrorActionPreference = 'Stop'
 $bridgeRoot = $PSScriptRoot
+. (Join-Path $bridgeRoot 'scripts\ops\WindowsLifecycle.ps1')
+Get-BridgeTask $bridgeRoot | Out-Null
 $localLaunchers = Join-Path $bridgeRoot 'exports\launchers'
 New-Item -ItemType Directory -Path $localLaunchers -Force | Out-Null
 $programs = [Environment]::GetFolderPath('Programs')

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { projectRoot, runtimeDir, publicDir, defaultUsersRoot, verificationDir } from './paths.mjs';
 import { execFileSync } from 'node:child_process';
 import { CodexRPC } from './core/codex.mjs';
-import { resolveCodexBinary } from './core/codex-binary.mjs';
+import { prepareRuntimeEnvironment,applyRuntimeEnvironment } from './core/runtime-environment.mjs';
 import { Accounts } from './core/accounts.mjs';
 import { QQ } from './qq/client.mjs';
 import { Memory } from './core/memory.mjs';
@@ -17,14 +17,14 @@ import { createMemoryRoutes } from './http/memory-routes.mjs';
 import { syncCommands, syncQuickMenu } from './qq/commands.mjs';
 import { authorizeUI, browserCookie } from './http/auth.mjs';
 import { ReleaseNotifications } from './ops/release-notifications.mjs';
-const dir=projectRoot,runtime=runtimeDir;fs.mkdirSync(runtime,{recursive:true});
+const dir=projectRoot,runtime=runtimeDir;fs.mkdirSync(runtime,{recursive:true,mode:0o700});
 const configFile=path.join(runtime,'config.json');
-const defaults={appId:'',clientSecret:'',users:[],pairingCodes:[],usersRoot:defaultUsersRoot,sandbox:false,qqProxy:'',codexBinary:'codex',adminToken:crypto.randomBytes(32).toString('hex'),python:'C:\\Users\\32979\\AppData\\Local\\Programs\\Python\\Python310\\python.exe',whisperModel:'C:\\Users\\32979\\.cache\\huggingface\\hub\\models--Systran--faster-whisper-small\\snapshots\\536b0662742c02347bc0e980a01041f333bce120',ffmpeg:'ffmpeg',ffprobe:'ffprobe',bridgeDir:dir};
+const defaults={appId:'',clientSecret:'',users:[],pairingCodes:[],usersRoot:defaultUsersRoot,sandbox:false,qqProxy:'',codexBinary:'codex',adminToken:crypto.randomBytes(32).toString('hex'),python:'python',whisperModel:'',ffmpeg:'ffmpeg',ffprobe:'ffprobe',bridgeDir:dir};
 const config=fs.existsSync(configFile)?{...defaults,...JSON.parse(fs.readFileSync(configFile,'utf8'))}:defaults;
 config.rotationTurns ||= 40;config.idleHours ||= 6;
-config.codexBinary=resolveCodexBinary(config.codexBinary);
-if(fs.existsSync(path.join(runtime,'asr-venv/Scripts/python.exe')))config.python=path.join(runtime,'asr-venv/Scripts/python.exe');
-function persist(){fs.writeFileSync(configFile+'.tmp',JSON.stringify(config,null,2),{mode:0o600});fs.renameSync(configFile+'.tmp',configFile);}
+const runtimeEnvironment=prepareRuntimeEnvironment(config,{runtime});
+Object.assign(config,runtimeEnvironment.configuration);applyRuntimeEnvironment(runtimeEnvironment.environment);
+function persist(){fs.writeFileSync(configFile+'.tmp',JSON.stringify({...config,...runtimeEnvironment.configuredCommands},null,2),{mode:0o600});fs.renameSync(configFile+'.tmp',configFile);}
 persist();
 if(process.platform==='win32'){
   const identity=execFileSync('whoami',[],{encoding:'utf8',windowsHide:true}).trim();
@@ -32,6 +32,7 @@ if(process.platform==='win32'){
 }
 const logs=[];
 function log(text){const line=`${new Date().toISOString()} ${text}`;logs.push(line);if(logs.length>50)logs.shift();fs.appendFileSync(path.join(runtime,'service.log'),line+'\n');console.log(line);}
+for(const [name,tool] of Object.entries(runtimeEnvironment.diagnostics.tools))if(tool.required&&!tool.available)log('运行环境缺少 '+name+'，请运行 npm run check:env 核对配置与安装');
 const qq=new QQ(config,log),history=new History(config,runtime),tasks=new TaskStore(history);
 const recoveredTasks=tasks.recoverPending();
 if(recoveredTasks)log(`重启后有 ${recoveredTasks} 个任务状态需要核实，未自动重新提交`);
@@ -74,8 +75,9 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='GET'&&req.url==='/history.js'){res.setHeader('Content-Type','text/javascript;charset=utf-8');res.end(historyJS);return;}
   if(req.method==='GET'&&req.url==='/ui-client.js'){res.setHeader('Content-Type','text/javascript;charset=utf-8');res.end(uiClient);return;}
   if(req.method==='GET'&&req.url==='/health'){respond(res,200,{ok:true});return;}
-  if(!authorizeUI(req,config.adminToken,base)){respond(res,403,{error:'本机页面未登录或登录已失效，请运行 Start.ps1 重新验证'});return;}
+  if(!authorizeUI(req,config.adminToken,base)){respond(res,403,{error:'本机页面未登录或登录已失效，请打开 runtime/setup-url.txt 中的完整链接'});return;}
   try{
+    if(req.method==='GET'&&req.url==='/api/environment'){respond(res,200,runtimeEnvironment.diagnostics);return;}
     if(req.url==='/api/session'&&['GET','POST'].includes(req.method)){if(req.method==='POST')res.setHeader('Set-Cookie',browserCookie(config.adminToken));respond(res,200,{ok:true});return;}
     if(req.method==='POST'&&req.url==='/api/releases'){
       if(draining)throw new Error('服务正在停机，未发送通知');
@@ -128,7 +130,7 @@ const server=http.createServer(async(req,res)=>{
     respond(res,404,{error:'未找到接口'});
   }catch(e){respond(res,400,{error:e.message});}
 });
-server.listen(port,host,()=>{fs.writeFileSync(path.join(runtime,'setup-url.txt'),`${base}/#${config.adminToken}`,{mode:0o600});fs.writeFileSync(path.join(runtime,'pid.txt'),String(process.pid));log(`本机配置服务 ${base}`);});
+server.listen(port,host,()=>{fs.writeFileSync(path.join(runtime,'setup-url.txt'),`${base}/#${config.adminToken}`,{mode:0o600});fs.writeFileSync(path.join(runtime,'pid.txt'),String(process.pid));log(`本机配置服务 ${base}，登录链接见 runtime/setup-url.txt`);});
 await checkCodex();qq.start();
 let closing=false;
 async function close(){if(closing)return;closing=true;await qq.stop();accounts.stop();history.close();server.close(()=>process.exit(0));server.closeAllConnections();setTimeout(()=>process.exit(0),2000).unref();}

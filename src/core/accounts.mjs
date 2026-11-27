@@ -66,7 +66,7 @@ export class Accounts {
       const pin=e.text.slice(6).trim();
       const code=this.config.pairingCodes.find(p=>{const a=Buffer.from(pin),b=Buffer.from(p.pin);return p.expires>Date.now()&&a.length===b.length&&crypto.timingSafeEqual(a,b);});
       if(!code)return;if(this.config.users.length>=20)throw new Error('授权账号上限为 20');
-      const workspace=path.join(this.config.usersRoot,this.userKey(e.user));fs.mkdirSync(workspace,{recursive:true});
+      const workspace=path.join(this.config.usersRoot,this.userKey(e.user));fs.mkdirSync(workspace,{recursive:true,mode:0o700});
       user={id:e.user,label:code.label,workspace,allowedRoots:[workspace],allowedGroups:[]};this.config.users.push(user);this.config.pairingCodes=this.config.pairingCodes.filter(p=>p!==code);this.persist();
       await this.qq.send(e,'已绑定独立账号。直接发送文字、图片、语音、视频或文件即可使用。/help 查看指令。');return;
     }

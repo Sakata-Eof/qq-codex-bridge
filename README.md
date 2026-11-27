@@ -30,25 +30,36 @@
 
 ## 快速开始
 
-准备 **Windows、Node.js 24、已安装并登录的 Codex**，以及自行创建的 QQ 官方机器人。语音和视频处理另需 FFmpeg/FFprobe、Python 与本地识别模型。
+准备 **Node.js 24 或更高版本**、已安装并登录的 Codex，以及自行创建的 QQ 官方机器人。把仓库克隆到当前用户可写的目录。Codex 和桥接应在同一系统和用户下运行。
 
-```powershell
+```sh
 git clone https://github.com/Sakata-Eof/qq-codex-bridge.git
 cd qq-codex-bridge
 npm ci
+npm run check:env
 ```
 
-启动脚本和媒体默认路径仍有本机环境假设。首次部署先按[安装检查](docs/RUNBOOK.md#换机或重新安装)核对路径，再启动：
+### Windows 后台运行
 
 ```powershell
-./Start.ps1
+./Install.ps1
 ```
 
-在控制台填写机器人 AppID 和 AppSecret，生成配对码；使用对应 QQ 账号私聊机器人发送 `/pair 配对码`。绑定后，在“账号管理”分配项目目录，就可以直接发送任务：
+安装脚本会注册当前用户的登录自启，创建开始菜单入口，并启动、打开控制台。使用 `./Install.ps1 -NoBrowser` 可只安装并启动后台。自启需要登录 Windows，关机或睡眠期间不能处理任务。日常启停见[维护手册](docs/RUNBOOK.md#日常入口)。
+
+### Windows、Linux 和 macOS 前台运行
+
+```sh
+npm start
+```
+
+在本机浏览器打开 `runtime/setup-url.txt` 里的完整链接。服务运行在当前终端，任务和投递结束后按 Ctrl+C 退出。语音转写和视频处理是可选能力，装好 FFmpeg/FFprobe、Python、faster-whisper 和模型后用 `npm run check:env -- --media` 检查。`/voice` 语音合成使用 Windows 语音引擎。 [前台启动与环境检查](docs/RUNBOOK.md#跨平台前台启动)
+
+### 配对并发送第一条任务
+
+在控制台填写机器人 AppID 和 AppSecret，生成配对码，再用对应 QQ 账号私聊机器人发送 `/pair 配对码`。新实例会在项目内 `work/qq-users/` 为每个账号建独立目录。绑定后可在“账号管理”选择自己的项目目录，并在“使用模型”区域选择模型和推理强度。等控制台显示 QQ READY，再发一条文字任务确认执行和回复。
 
 > 查看当前项目，先总结结构，再列出最值得解决的三个问题。
-
-已有实例可从 Windows 开始菜单打开“Codex QQ 控制台”。后台运行无需保留终端窗口；`./Stop.ps1` 用于安全停机，正在执行或投递时会拒绝停止。
 
 ## 常用指令
 

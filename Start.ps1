@@ -1,37 +1,22 @@
-﻿param([switch]$History, [switch]$NoBrowser)
+param([switch]$History, [switch]$NoBrowser)
 $ErrorActionPreference = 'Stop'
 $bridgeRoot = $PSScriptRoot
+. (Join-Path $bridgeRoot 'scripts\ops\WindowsLifecycle.ps1')
+$autostart = Get-BridgeTask $bridgeRoot
+if ($autostart -and [string]$autostart.State -eq 'Disabled') { throw 'Autostart is disabled. Run Install.ps1 to enable it again.' }
+Resolve-BridgeNode $bridgeRoot -Persist | Out-Null
 $stopFlag = Join-Path $bridgeRoot 'runtime\stop.flag'
 if (Test-Path -LiteralPath $stopFlag) { Remove-Item -LiteralPath $stopFlag }
-$autostart = Get-ScheduledTask -TaskName 'QQ-Codex-Bridge' -ErrorAction SilentlyContinue
-if ($autostart) { Start-ScheduledTask -TaskName 'QQ-Codex-Bridge' }
-$pidFile = Join-Path $bridgeRoot 'runtime\pid.txt'
-$running = $null
-if (Test-Path -LiteralPath $pidFile) {
-    $bridgePid = [int](Get-Content -LiteralPath $pidFile)
-    $candidate = Get-CimInstance Win32_Process -Filter "ProcessId=$bridgePid" -ErrorAction SilentlyContinue
-    if ($candidate -and $candidate.CommandLine -and $candidate.CommandLine.Contains((Join-Path $bridgeRoot 'server.mjs'))) { $running = $candidate }
+Start-BridgeWatchdog $bridgeRoot $autostart
+$ready = $false
+for ($i=0; $i -lt 90; $i++) {
+    if ((Get-BridgeProcess $bridgeRoot service) -and (Get-BridgeProcess $bridgeRoot watchdog) -and
+        (Test-Path -LiteralPath (Join-Path $bridgeRoot 'runtime\setup-url.txt')) -and (Test-BridgeHealth)) { $ready = $true; break }
+    # A previous scheduled launcher can still be exiting after a safe stop.
+    if ($autostart -and $i % 4 -eq 3) { Start-BridgeWatchdog $bridgeRoot $autostart }
+    Start-Sleep -Milliseconds 500
 }
-if (-not $running -and -not $autostart) {
-    $launcherPath = & (Join-Path $bridgeRoot 'scripts\ops\Build-WindowsLauncher.ps1')
-    Start-Process -FilePath $launcherPath -ArgumentList 'watchdog' -WorkingDirectory $bridgeRoot -WindowStyle Hidden
-    $ready = $false
-    for ($i=0; $i -lt 30; $i++) {
-        Start-Sleep -Milliseconds 300
-        if (Test-Path -LiteralPath (Join-Path $bridgeRoot 'runtime\setup-url.txt')) {
-            try { Invoke-WebRequest -Uri 'http://127.0.0.1:17329/' -TimeoutSec 1 | Out-Null; $ready = $true; break } catch {}
-        }
-    }
-    if (-not $ready) { throw '服务未就绪，请查看 runtime\service.log。' }
-}
-if (-not $running -and $autostart) {
-    $ready = $false
-    for ($i=0; $i -lt 45; $i++) {
-        Start-Sleep -Seconds 1
-        try { Invoke-WebRequest -Uri 'http://127.0.0.1:17329/health' -TimeoutSec 1 | Out-Null; $ready = $true; break } catch {}
-    }
-    if (-not $ready) { throw '守护进程未能启动服务，请查看 runtime\service.log。' }
-}
+if (-not $ready) { throw 'Service or watchdog is not ready. Check Status.ps1 and runtime\launcher.log / service.log.' }
 $setupUrl = Get-Content -LiteralPath (Join-Path $bridgeRoot 'runtime\setup-url.txt')
 if ($History) { $setupUrl = $setupUrl -replace '/#', '/history#' }
 if (-not $NoBrowser) { Start-Process $setupUrl }

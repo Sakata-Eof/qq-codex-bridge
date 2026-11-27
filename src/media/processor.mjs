@@ -86,6 +86,7 @@ export class Media {
     await this.sendFile(e,image);await this.voice(e,'这是 QQ Codex 音频发送测试。',cwd);
   }
   async voice(e,text,cwd){
+    if(process.platform!=='win32')throw new Error('生成语音需要 Windows 语音引擎');
     if(text.length>1000)throw new Error('语音文字最多 1000 字');
     const folder=path.join(cwd,'.qq-outgoing',crypto.randomBytes(8).toString('hex'));fs.mkdirSync(folder,{recursive:true});
     const source=path.join(folder,'text.txt'),wav=path.join(folder,'voice.wav');fs.writeFileSync(source,text,'utf8');

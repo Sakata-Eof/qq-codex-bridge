@@ -1,24 +1,50 @@
 # 运行与维护
 
-以下命令在项目根目录的 PowerShell 执行。现有实例不需要重复安装、重新配对或重填凭据。目录整理保留根目录启停入口，`runtime/`、`exports/` 和账号工作目录的用途不变。
+在项目根目录执行维护命令。`.ps1` 入口在 Windows PowerShell 中运行，其他系统使用 npm 前台入口。现有实例不需要重复安装、重新配对或重填凭据。
 
 ## 日常入口
 
-开始菜单搜索“Codex QQ 控制台”或“Codex QQ 消息历史”。备用脚本为：
+首次部署在 `npm ci` 后按[运行环境检查](#运行环境检查)核对依赖，再运行 `./Install.ps1`，自动识别 Node.js 24 或更高版本，安装当前用户的登录启动任务及开始菜单入口，并启动、打开控制台。`./Install.ps1 -NoBrowser` 只安装并启动后台。Node 路径保存在 `runtime/windows-host.json`；路径失效时从进程及当前用户、机器 PATH 重新发现，不再依赖特定机器的 Node 安装目录。媒体环境仍需单独核对，见[换机或重新安装](#换机或重新安装)。
+
+日常在开始菜单搜索“Codex QQ 控制台”或“Codex QQ 消息历史”，也可直接运行脚本：
 
 ```powershell
 ./Start.ps1
 ./Start.ps1 -History
 ./Start.ps1 -NoBrowser
+./Restart.ps1
+./Restart.ps1 -OpenBrowser
+./Status.ps1
+./Stop.ps1
 ```
 
 同一浏览器验证登录后，可收藏 `http://127.0.0.1:17329/` 和 `/history`。新浏览器、Cookie 清除或登录过期时，通过启动入口重新验证。验证链接和 `runtime/setup-url.txt` 含管理凭据，不应分享。
 
-`./Install-Launchers.ps1` 重建开始菜单入口，本地快捷方式副本放在 `exports/launchers/`。`./Install-Autostart.ps1` 安装或更新当前 Windows 用户的登录启动任务 `QQ-Codex-Bridge` 并启动守护。两者自动用 Windows 自带的 .NET 编译器生成 `runtime/launchers/` 下的 GUI 启动器，通过 `CreateNoWindow` 启动 PowerShell，服务子进程也不创建控制台窗口。开始菜单入口与登录启动均无需保留空白窗口；任务仍等待守护退出，以保留单实例和失败重启行为。任务需要用户登录，关机或睡眠期间不能处理 QQ。
+统一安装入口可重复运行，也用于升级旧入口：先验证 Node、依赖及计划任务归属，已有实例安全停机成功后才更新任务、快捷方式并启动新守护。服务忙碌或停机结果未确认时会终止安装，先处理对应任务再重试。原 `./Install-Launchers.ps1` 和 `./Install-Autostart.ps1` 保留，分别重建开始菜单入口、安装或更新当前用户的登录启动任务 `QQ-Codex-Bridge` 并启动守护；快捷方式副本放在 `exports/launchers/`。启动器由 Windows 自带的 .NET 编译器生成到 `runtime/launchers/`，通过 `CreateNoWindow` 启动 PowerShell，服务子进程也不创建控制台窗口。任务等待守护退出，以保留单实例和失败退出状态。
 
-升级旧入口时，先用 `Stop.ps1` 安全停机，确认服务及旧守护已退出，再运行两个安装脚本，最后运行 `Start.ps1 -NoBrowser` 并检查健康状态。只重新注册任务不会替换已经运行的旧守护。启动器使用源码摘要命名，升级时不会覆盖仍在运行的程序；生成的 EXE 不纳入 Git。启动器错误及 PowerShell 输出记录在 `runtime/launcher.log`，服务日志仍在原位置。
+自启发生在当前用户登录后。登录任务还每分钟尝试运行守护；服务进程退出或连续健康检查失败由守护恢复，守护或任务被结束后由下次周期尝试恢复。手动禁用、删除计划任务后不会自动恢复；关机、睡眠或尚未登录时不能处理 QQ。周期触发是恢复机会，不代表服务一定能在一分钟内就绪，依赖错误仍需排查。完整重启电脑后的登录启动仍需受控验收。
 
-`./Stop.ps1` 请求安全停机，并写停机标志防止守护立即重启。服务忙碌时拒绝停机；需要中断时，先由对应账号在 QQ 使用 `/stop`，再确认任务及投递结束。再次运行 `Start.ps1` 会清除停机标志并恢复启动。
+`./Restart.ps1` 先请求安全停机，确认服务和守护退出后再启动，默认不打开浏览器；加 `-OpenBrowser` 可打开控制台。服务拒绝停机或停机结果未确认时会报错终止，不继续重启。脚本、启动器或守护更新后也需要重启加载；只重新注册任务不会替换已经运行的旧守护。启动器使用源码摘要命名，升级时不会覆盖仍在运行的程序，生成的 EXE 不纳入 Git。启动器错误及 PowerShell 输出记录在 `runtime/launcher.log`，服务日志仍在原位置。
+
+`./Stop.ps1` 请求安全停机，并写入 `runtime/stop.flag`。主动停机标志持续阻止守护、周期触发及后续登录自动恢复；再次运行 `Start.ps1` 或安装入口才明确恢复。服务忙碌时拒绝停机；需要中断时，先由对应账号在 QQ 使用 `/stop`，再确认任务及投递结束。`./Status.ps1` 分别显示服务、守护、计划任务和主动停机状态，便于区分故障与有意暂停。
+
+`./Uninstall-Autostart.ps1` 先安全停机，成功后移除登录启动计划任务；停机失败则终止卸载。它保留运行数据和开始菜单快捷方式，之后仍可用 `Start.ps1` 手动启动；需恢复自启时重新运行 `Install.ps1`。
+
+## 跨平台前台启动
+
+在当前用户可写的目录克隆项目。准备 Node.js 24 或更高版本，并在运行桥接的系统和用户下安装、登录 Codex。以下命令用于 Windows、Linux 和 macOS，也可在 WSL 使用 Linux 版 Node 和 Codex。
+
+```sh
+npm ci
+npm run check:env
+npm start
+```
+
+日志显示本机监听地址后，在本机浏览器打开 `runtime/setup-url.txt` 中包含 `#` 片段的完整链接。这个文件含管理凭据，应仅由本机所有者读取。服务在当前终端前台运行，等任务、审批、投递和导出结束后按 Ctrl+C 退出。同一份源码目录只启动一份服务。Windows 的登录自启、开始菜单和守护由上节的 PowerShell 入口提供。
+
+首次保存机器人凭据后，等控制台显示 QQ READY，再生成配对码并用对应账号私聊机器人。新实例在项目内 `work/qq-users/` 下创建独立工作目录，`work/` 已列入 Git 忽略。文本任务可先独立验收。需要本地转写和视频处理时再装媒体依赖并运行 `npm run check:env -- --media`。`/voice` 语音合成依赖 Windows 语音引擎。
+
+如果旧版已生成配置，且首次配对因默认目录无法创建而失败，先停机，将 `runtime/config.json` 的 `usersRoot` 改为当前用户可写的绝对路径，再启动并配对。
 
 ## 配置位置
 
@@ -37,21 +63,50 @@
 | `appId`、`clientSecret`、`sandbox` | 专用 QQ 机器人及平台环境；与 Hermes 机器人独立 |
 | `adminToken`、`runtime/setup-url.txt` | 本机页面登录；修改凭据后浏览器需重新验证 |
 | `users`、`pairingCodes` | 已绑定账号及临时配对码；不要用示例覆盖现有授权 |
-| `usersRoot`、账号工作目录及 `allowedRoots` | 工作文件位置与访问边界，账号目录不得重叠 |
+| `usersRoot`、账号工作目录及 `allowedRoots` | 工作文件位置与访问边界。新实例的 `usersRoot` 默认是项目内 `work/qq-users/`，升级沿用已保存的根目录和各账号目录，账号目录不得重叠 |
 | `codexBinary` | Codex 程序；服务及每个账号进程启动前检查路径，桌面安装的旧版本被移除时重新发现可用版本；显式自定义路径不自动替换，仍需核对对应账号登录 |
-| `python`、`whisperModel` | 本地语音识别；存在 `runtime/asr-venv/Scripts/python.exe` 时优先使用该环境 |
+| `python`、`whisperModel` | 本地语音识别。默认优先使用 `runtime/asr-venv` 下的 Python，其次从 PATH 查找 `python`，Linux 和 macOS 也会尝试 `python3`。未指定模型时从当前用户的 Hugging Face 缓存发现 faster-whisper-small |
 | `ffmpeg`、`ffprobe` | 媒体转换与探测程序 |
 | `rotationTurns`、`idleHours` | 下次任务开始时轮换会话的阈值，保留已有设置 |
 | 各账号模型设置 | 由管理页或 QQ `/model` 维护，不修改其他账号及桌面 Codex 默认值 |
 | `replyFormat` | 默认 Markdown，设为 `plain` 使用纯文本 |
 | `releaseNotificationsEnabled` | 仅显式为 `true` 且变更属于 QQ 用户可感知范围时允许发布通知 |
 
-服务默认监听 `127.0.0.1:17329`，Node 入口可读取 `QQ_CODEX_PORT`；现有 PowerShell 启停和守护仍按默认端口工作。不要将只换端口视为独立开发实例，运行目录、账号数据和机器人网关仍可能冲突。统一路径在 `src/paths.mjs`，默认配置及组装在 `src/app.mjs`，不提供独立运行目录的环境变量开关。
+服务默认监听 `127.0.0.1:17329`，Node 入口支持 `QQ_CODEX_PORT`；计划任务不会持久化调用端的环境变量，因此计划任务安装及关联启停只允许默认端口 `17329`，非默认端口会被拒绝。不要将只换端口视为独立开发实例，运行目录、账号数据和机器人网关仍可能冲突。统一路径在 `src/paths.mjs`，默认配置及组装在 `src/app.mjs`，不提供独立运行目录的环境变量开关。
+
+## 运行环境检查
+
+同一个检查脚本可从各系统的 npm 入口运行。
+
+```sh
+npm run check:env
+npm run check:env -- --media
+```
+
+Windows 启动入口读取进程、当前用户和机器的 PATH，合并 Node 与系统工具目录；仅在相关进程内使用，不写用户或机器环境设置。`Resolve-BridgeNode` 临时刷新发现环境后恢复调用终端 PATH。服务统一发现工具并保存本次运行的绝对路径，配置仍保留原始命令或显式路径；默认 Python 和 Whisper 模型不包含固定用户名。显式自定义路径失效时应修正配置，不会悄悄改用别的程序。
+
+```powershell
+./Check-Environment.ps1
+./Check-Environment.ps1 -Media
+# Node 未登记到 PATH 时，可为本次检查显式指定
+./Check-Environment.ps1 -NodePath 'C:\Program Files\nodejs\node.exe' -Media
+```
+
+PowerShell 检查入口会先解析 Node 绝对路径，再运行 `scripts/ops/check-environment.mjs`。JSON 输出列出已找到和缺少的工具。默认检查在 `coreReady=false` 时返回非零退出码。npm 的 `--media` 或 PowerShell 的 `-Media` 还要求 `mediaReady=true`。此检查只读配置，也可在服务首次启动前运行。
+
+| 结果 | 能说明什么 |
+| --- | --- |
+| `coreReady` | Node.js 24 或更高版本可用，Codex 程序路径存在 |
+| `mediaReady` | Python、FFmpeg/FFprobe 可定位，Python 可发现 faster-whisper 包，模型目录含 `model.bin` 和 `config.json` |
+| `tools`、`fasterWhisper`、`whisperModel` | 具体缺项或已解析路径，辅助工具缺少不必然影响文字任务 |
+
+两个就绪字段分别描述宿主核心和媒体依赖，不证明命令沙盒获准执行程序、Codex 已登录、模型权限有效、模型实际加载成功或 QQ 已收到回复。服务启动时记录相同诊断，认证后的 `GET /api/environment` 返回该快照；`Status.ps1` 的 `CoreToolsReady`、`MediaToolsReady` 读取运行服务摘要，取不到时为空，不能当作已通过。新电脑安装、真实 QQ 客户端及完整重启后的验收仍需分别完成。
 
 ## 健康检查
 
 ```powershell
 Invoke-RestMethod 'http://127.0.0.1:17329/health'
+./Status.ps1
 Get-ScheduledTask -TaskName 'QQ-Codex-Bridge' | Select-Object TaskName, State
 ```
 
@@ -131,6 +186,8 @@ SQLite 使用 WAL。整目录备份应在安全停机后进行，避免只复制
 
 ## 换机或重新安装
 
-安装兼容 Node.js 后，运行 `npm ci`。安装并登录本机 Codex，核对 FFmpeg/FFprobe、Python、ASR 模型及账号工作目录。`src/app.mjs` 的默认媒体路径和 `Watchdog.ps1` 的 Node 路径仍有机器假设，换机必须检查。
+按[跨平台前台启动](#跨平台前台启动)安装并检查依赖。从旧机器恢复数据时，先在新系统登录 Codex，再核对 `usersRoot`、每个账号的工作目录及其他显式绝对路径。启动后分别检查控制台、QQ READY 和真实文字任务结果。媒体功能按实际使用范围验收。
 
-重新安装启动任务和快捷方式，再以新机器的真实任务结果验证。不要把 Git 克隆当作已配置完成的机器人：凭据、授权、账号工作数据和媒体环境不在仓库中。移动现有实例目录时还要核对启动任务、快捷方式、允许目录和配置中的绝对路径。
+运行 `./Install.ps1` 自动安装或更新启动任务及快捷方式，记录本机 Node 路径，无须手工复制开始菜单入口。恢复旧数据后也重新运行安装入口，以新机器路径为准，再用 `Status.ps1` 和新机器的真实任务结果验证。不要把 Git 克隆当作已配置完成的机器人：凭据、授权、账号工作数据和媒体环境不在仓库中。
+
+已安装自启的实例需要移动目录时，先在原路径运行 `./Uninstall-Autostart.ps1` 安全停机并卸载任务，成功后再移动，在新路径运行 `./Install.ps1` 重建任务和快捷方式；随后核对允许目录及配置中的绝对路径。不要直接在新路径覆盖旧任务：归属检查会拒绝操作其他目录的任务，以避免误停或误改已有实例。

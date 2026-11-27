@@ -1,6 +1,6 @@
 # QQ–Codex Bridge 项目概览
 
-通过独立的 QQ 官方机器人，在 QQ 中指挥 Windows 本机 Codex 执行任务，并提供本机管理页和按账号、会话组织的消息历史。
+通过独立的 QQ 官方机器人，在 QQ 中指挥本机 Codex 执行任务，并提供本机管理页和按账号、会话组织的消息历史。
 
 ## 范围与证据
 
@@ -31,13 +31,15 @@
 | [tests/](tests/) | 隔离、消息、存储、QQ 投递和浏览器回归测试 |
 | `Start.ps1`、`Stop.ps1`、`Watchdog.ps1`、`Install-*.ps1` | 保留现有启停、守护和安装入口 |
 
+Windows 登录自启、启停与守护见 [运行与维护](docs/RUNBOOK.md#日常入口)，宿主依赖用 `npm run check:env` 检查。
+
 架构与设计边界见 [ARCHITECTURE](docs/ARCHITECTURE.md)。目录按职责划分，`src/app.mjs` 负责组装；独立模块不应通过导入服务入口取得配置或状态。
 
 ## 环境与数据
 
-使用 Node.js 24 和内置 SQLite，npm 依赖由锁文件管理。Codex 使用本机已安装、已登录的 App Server；媒体路径还依赖 FFmpeg/FFprobe、Python、faster-whisper 与本地模型。具体可执行文件和模型位置以当前安装及配置为准。
+使用 Node.js 24 或更高版本和内置 SQLite，npm 依赖由锁文件管理。`npm start` 提供 Windows、Linux 和 macOS 的前台入口，Windows 另有自启和守护脚本。Codex 使用同一系统中已安装、已登录的 App Server。媒体路径还依赖 FFmpeg/FFprobe、Python、faster-whisper 与本地模型，`/voice` 依赖 Windows 语音引擎。
 
-本机界面默认为 `http://127.0.0.1:17329/`，消息历史为 `/history`。`runtime/` 保存凭据、登录入口、历史数据库、账号状态及 Codex 专属数据；默认账号工作目录在项目外的 `../../work/qq-users/`，实际路径以配置为准。结构整理不代表运行数据已迁移。
+本机界面默认为 `http://127.0.0.1:17329/`，消息历史为 `/history`。`runtime/` 保存凭据、登录入口、历史数据库、账号状态及 Codex 专属数据。新实例默认在项目内 `work/qq-users/` 下创建账号工作目录，已有实例继续使用配置中的路径。
 
 `exports/` 保存历史导出及私有验证资料，探针报告位于 `exports/verification/reports/`。这些资料、运行日志和私有截图均不纳入 Git。完整备份须覆盖运行目录以及配置指向的所有账号工作目录，详见 [RUNBOOK](docs/RUNBOOK.md#备份与恢复)。
 
