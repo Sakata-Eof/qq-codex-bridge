@@ -12,6 +12,7 @@ import { Memory } from './core/memory.mjs';
 import { History } from './history/store.mjs';
 import { TaskStore } from './history/task-store.mjs';
 import { createHistoryRoutes } from './http/history-routes.mjs';
+import { readJSONBody as body } from './http/json-body.mjs';
 import { createTaskRoutes } from './http/task-routes.mjs';
 import { createMemoryRoutes } from './http/memory-routes.mjs';
 import { syncCommands, syncQuickMenu } from './qq/commands.mjs';
@@ -61,7 +62,7 @@ const html=Buffer.from(fs.readFileSync(path.join(publicDir,'setup.html'),'utf8')
 const historyJS=fs.readFileSync(path.join(publicDir,'history.js'));
 const uiClient=fs.readFileSync(path.join(publicDir,'ui-client.js'));
 function respond(res,code,data){res.writeHead(code,{'Content-Type':'application/json;charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
-async function body(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>8192)throw new Error('请求过长');}return JSON.parse(text||'{}');}
+
 const historyRoutes=createHistoryRoutes({config,accounts,history,qq,base,respond,body});
 const taskRoutes=createTaskRoutes({config,tasks,accounts,qq,base,respond});
 const memoryRoutes=createMemoryRoutes({config,accounts,base,respond,body});
