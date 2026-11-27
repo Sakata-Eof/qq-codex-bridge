@@ -49,6 +49,8 @@ npm run check:env
 
 ### Windows、Linux 和 macOS 前台运行
 
+目前已在 Windows 和 Ubuntu WSL 的隔离环境中验证前台启动。独立 Linux 主机和 macOS 尚未实际部署验证。
+
 ```sh
 npm start
 ```
